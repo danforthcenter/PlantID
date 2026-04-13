@@ -8,7 +8,9 @@ It is designed to work both locally and on Streamlit Cloud.
 Try the app directly without installation
 https://plantid-label-designer.streamlit.app
 
-<img width="725" height="360" alt="Screenshot 2026-02-09 at 00 03 59" src="https://github.com/user-attachments/assets/e3447010-438f-44d4-9f60-70dfed78235b" />
+
+<img width="732" height="460" alt="Screenshot 2026-04-13 at 11 32 04" src="https://github.com/user-attachments/assets/b937336e-6740-48e7-ad65-1a57c7b8729d" />
+
 
 ## Installation (Local)
 Clone this repository
