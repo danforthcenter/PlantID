@@ -1,2 +1,0 @@
-Font choice option
-Font size option
