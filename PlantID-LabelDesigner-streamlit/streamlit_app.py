@@ -23,9 +23,21 @@ if "data_source" not in st.session_state:
     st.session_state.data_source = None
 if "start_selected_source" not in st.session_state:
     st.session_state.start_selected_source = None
+if "loaded_template_metadata" not in st.session_state:
+    st.session_state.loaded_template_metadata = None
 
-TEMPLATE_VERSION = 1
+APP_NAME = "PlantID Label Designer"
+APP_VERSION = "1.2.0"
+TEMPLATE_VERSION = 2
 TEMPLATE_DEFAULTS = {
+    "split_column_enabled_check": False,
+    "split_column_select": None,
+    "split_primary_delimiter_input": "_",
+    "split_secondary_enabled_check": False,
+    "split_secondary_delimiter_input": "-",
+    "visible_columns_multiselect": [],
+    "rename_columns_check": False,
+    "column_label_overrides": {},
     "units_select": "Metric (mm)",
     "preset_select": "Custom",
     "label_width_mm_slider": 70,
@@ -48,6 +60,7 @@ TEMPLATE_DEFAULTS = {
     "side_highlight_check": False,
     "sidebar_factor_slider": 0.1,
 }
+PREFERRED_SPLIT_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID"]
 
 
 def build_template_payload(label_width_mm=None, label_height_mm=None):
@@ -66,7 +79,8 @@ def build_template_payload(label_width_mm=None, label_height_mm=None):
         settings["label_height_in_slider"] = round(height_mm / 25.4, 3)
     return {
         "template_version": TEMPLATE_VERSION,
-        "app": "PlantID Label Designer",
+        "app": APP_NAME,
+        "app_version": APP_VERSION,
         "settings": settings,
     }
 
@@ -98,6 +112,22 @@ def load_template_payload(uploaded_file):
     for key, value in applied.items():
         st.session_state[key] = value
 
+    st.session_state["loaded_template_metadata"] = {
+        "filename": getattr(uploaded_file, "name", "template.json"),
+        "app_name": parsed.get("app", APP_NAME),
+        "app_version": parsed.get("app_version", "Not recorded"),
+        "template_version": parsed.get("template_version", "Not recorded"),
+    }
+
+    # Reset dynamic rename inputs so loaded templates repopulate every renamed column.
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("column_label_override_"):
+            del st.session_state[key]
+
+    if isinstance(st.session_state.get("column_label_overrides"), dict):
+        for column, label in st.session_state["column_label_overrides"].items():
+            st.session_state[f"column_label_override_{column}"] = label
+
     # Backfill equivalent units and force Custom so loaded dimensions are respected.
     if "label_width_mm_slider" in applied and "label_height_mm_slider" in applied:
         try:
@@ -119,6 +149,52 @@ def load_template_payload(uploaded_file):
             pass
 
     return applied, None
+
+
+def render_version_footer():
+    st.divider()
+    loaded_template = st.session_state.get("loaded_template_metadata")
+    footer_text = f"{APP_NAME} v{APP_VERSION} | Template JSON schema v{TEMPLATE_VERSION}"
+
+    if loaded_template:
+        footer_text += (
+            f" | Loaded template: {loaded_template.get('filename', 'template.json')} "
+            f"(saved with {loaded_template.get('app_name', APP_NAME)} "
+            f"v{loaded_template.get('app_version', 'Not recorded')}, "
+            f"JSON schema v{loaded_template.get('template_version', 'Not recorded')})"
+        )
+
+    st.caption(footer_text)
+
+    if not loaded_template:
+        return
+
+    version_notes = []
+    loaded_app_version = loaded_template.get("app_version")
+    loaded_template_version = loaded_template.get("template_version")
+
+    if loaded_app_version in (None, "", "Not recorded"):
+        version_notes.append("The loaded template does not record an app version.")
+    elif loaded_app_version != APP_VERSION:
+        version_notes.append(
+            f"The loaded template was saved with app version {loaded_app_version}, "
+            f"which differs from this app version {APP_VERSION}."
+        )
+
+    if isinstance(loaded_template_version, int):
+        if loaded_template_version > TEMPLATE_VERSION:
+            version_notes.append(
+                "The loaded template uses a newer JSON schema than this app, so some settings may not load."
+            )
+        elif loaded_template_version < TEMPLATE_VERSION:
+            version_notes.append(
+                "The loaded template uses an older JSON schema than this app."
+            )
+    elif loaded_template_version not in (None, "", "Not recorded"):
+        version_notes.append("The loaded template uses an unrecognized JSON schema value.")
+
+    if version_notes:
+        st.caption("Version note: " + " ".join(version_notes))
 
 
 def ensure_choice(key, options, default):
@@ -146,6 +222,144 @@ def ensure_float_range(key, default, min_value, max_value):
 
 def ensure_bool(key, default):
     st.session_state[key] = bool(st.session_state.get(key, default))
+
+
+def ensure_text_value(key, default):
+    if key not in st.session_state or st.session_state[key] is None:
+        st.session_state[key] = default
+
+
+def ensure_dict_value(key, default):
+    if key not in st.session_state or not isinstance(st.session_state[key], dict):
+        st.session_state[key] = dict(default)
+
+
+def ensure_multiselect_choices(key, options, default):
+    if key not in st.session_state:
+        st.session_state[key] = default
+    st.session_state[key] = [
+        value for value in st.session_state[key] if value in options
+    ]
+    if not st.session_state[key]:
+        st.session_state[key] = default
+
+
+def detect_default_split_column(columns):
+    if not columns:
+        return None
+
+    for candidate in PREFERRED_SPLIT_COLUMNS:
+        if candidate in columns:
+            return candidate
+
+    lowered = {column.lower(): column for column in columns}
+    for candidate in PREFERRED_SPLIT_COLUMNS:
+        if candidate.lower() in lowered:
+            return lowered[candidate.lower()]
+
+    return columns[0]
+
+
+def unique_column_name(base_name, existing_columns):
+    if base_name not in existing_columns:
+        existing_columns.add(base_name)
+        return base_name
+
+    suffix = 2
+    while f"{base_name}_{suffix}" in existing_columns:
+        suffix += 1
+
+    unique_name = f"{base_name}_{suffix}"
+    existing_columns.add(unique_name)
+    return unique_name
+
+
+def build_split_dataframe(
+    df,
+    split_enabled,
+    split_column,
+    primary_delimiter,
+    secondary_split_enabled=False,
+    secondary_delimiter="",
+):
+    if df is None:
+        return None, [], []
+
+    result = df.copy()
+    if not split_enabled or split_column not in result.columns or not primary_delimiter:
+        return result, [], []
+
+    existing_columns = set(result.columns.tolist())
+    source_values = result[split_column].apply(
+        lambda value: "" if pd.isna(value) else str(value)
+    )
+    primary_parts_per_row = [
+        [part.strip() for part in value.split(primary_delimiter)]
+        for value in source_values
+    ]
+
+    max_primary_parts = max((len(parts) for parts in primary_parts_per_row), default=0)
+    if max_primary_parts <= 1:
+        return result, [], []
+
+    primary_columns = []
+
+    for primary_index in range(max_primary_parts):
+        column_name = unique_column_name(
+            f"{split_column}_split_{primary_index + 1}",
+            existing_columns,
+        )
+        primary_columns.append(column_name)
+        result[column_name] = [
+            parts[primary_index] if primary_index < len(parts) else ""
+            for parts in primary_parts_per_row
+        ]
+
+    secondary_columns = []
+    if secondary_split_enabled and secondary_delimiter:
+        for primary_index, primary_column in enumerate(primary_columns, start=1):
+            secondary_parts_per_row = []
+            max_secondary_parts = 0
+
+            for value in result[primary_column].tolist():
+                if secondary_delimiter in value:
+                    secondary_parts = [
+                        part.strip() for part in value.split(secondary_delimiter)
+                    ]
+                else:
+                    secondary_parts = [value]
+                secondary_parts_per_row.append(secondary_parts)
+                if len(secondary_parts) > 1:
+                    max_secondary_parts = max(max_secondary_parts, len(secondary_parts))
+
+            if max_secondary_parts <= 1:
+                continue
+
+            for secondary_index in range(max_secondary_parts):
+                column_name = unique_column_name(
+                    f"{split_column}_split_{primary_index}_{secondary_index + 1}",
+                    existing_columns,
+                )
+                secondary_columns.append(column_name)
+                result[column_name] = [
+                    parts[secondary_index]
+                    if len(parts) > 1 and secondary_index < len(parts)
+                    else ""
+                    for parts in secondary_parts_per_row
+                ]
+
+    ordered_columns = []
+    for column in df.columns.tolist():
+        ordered_columns.append(column)
+        if column == split_column:
+            ordered_columns.extend(primary_columns)
+            ordered_columns.extend(secondary_columns)
+
+    ordered_columns.extend(
+        column for column in result.columns.tolist() if column not in ordered_columns
+    )
+
+    return result[ordered_columns], primary_columns, secondary_columns
 
 # ======================================================
 # Draw a single label directly onto a ReportLab canvas
@@ -176,6 +390,7 @@ def draw_label_on_canvas(
     side_highlight=False,
     qr_left_offset=2,
     text_left_offset=0,
+    column_label_map=None,
 ):
     def font_variant(base_font, variant):
         variants = {
@@ -203,6 +418,7 @@ def draw_label_on_canvas(
     lw_pt = label_width * mm
     lh_pt = label_height * mm
     pad_pt = padding * mm
+    column_label_map = column_label_map or {}
 
     # ---- 1. Outer border ----
     if show_border:
@@ -216,7 +432,7 @@ def draw_label_on_canvas(
     side_col_width = 0
     if side_highlight and highlight_column:
         side_col_width = lw_pt * sidebar_factor
-        col_name = highlight_column
+        col_name = column_label_map.get(highlight_column, highlight_column)
         value = str(df_row[highlight_column])
         font_size = label_font_size
 
@@ -291,13 +507,14 @@ def draw_label_on_canvas(
 
     for idx, col_name in enumerate(visible_columns):
         val = str(df_row[col_name])
+        display_name = column_label_map.get(col_name, col_name)
         y_pos = text_y_start - idx * row_height
         
         c.saveState()
         if show_column_names:
             c.setFont(font_variant(label_font, "italic"), label_font_size)
             c.setFillColor(colors.black)
-            c.drawRightString(text_x + avail_w * 0.35, y_pos, f"{col_name}:")
+            c.drawRightString(text_x + avail_w * 0.35, y_pos, f"{display_name}:")
 
         if col_name == highlight_column:
             c.setFont(font_variant(label_font, "bold"), label_font_size)
@@ -338,6 +555,7 @@ def generate_sheet_direct(
     side_highlight=False,
     qr_left_offset=2,
     text_left_offset=0,
+    column_label_map=None,
     page_format="LabelPrinter",
     repeat_count=1,
 ):
@@ -386,6 +604,7 @@ def generate_sheet_direct(
                 side_highlight=side_highlight,
                 qr_left_offset=qr_left_offset,
                 text_left_offset=text_left_offset,
+                column_label_map=column_label_map,
             )
 
             x += label_width * mm + margin
@@ -405,7 +624,7 @@ def generate_sheet_direct(
 # Streamlit UI
 # ======================================================
 st.set_page_config(layout="wide")
-st.title("PlantID Label Designer")
+st.title(APP_NAME)
 
 # ======================
 # Start page
@@ -472,6 +691,7 @@ if st.session_state.df is None:
         else:
             st.error("Select a CSV upload or click 'Use default CSV' before clicking Go.")
 
+    render_version_footer()
     st.stop()
 
 # ==========================================
@@ -481,6 +701,34 @@ summary_container = st.container()
 preview_container = st.container()
 filter_container = st.container()
 export_container = st.container()
+
+split_column_options = st.session_state.df.columns.tolist()
+default_split_column = detect_default_split_column(split_column_options)
+ensure_bool("split_column_enabled_check", TEMPLATE_DEFAULTS["split_column_enabled_check"])
+ensure_choice("split_column_select", split_column_options, default_split_column)
+ensure_text_value(
+    "split_primary_delimiter_input",
+    TEMPLATE_DEFAULTS["split_primary_delimiter_input"],
+)
+ensure_bool(
+    "split_secondary_enabled_check",
+    TEMPLATE_DEFAULTS["split_secondary_enabled_check"],
+)
+ensure_text_value(
+    "split_secondary_delimiter_input",
+    TEMPLATE_DEFAULTS["split_secondary_delimiter_input"],
+)
+ensure_bool("rename_columns_check", TEMPLATE_DEFAULTS["rename_columns_check"])
+ensure_dict_value("column_label_overrides", TEMPLATE_DEFAULTS["column_label_overrides"])
+
+active_df, generated_split_columns, generated_secondary_split_columns = build_split_dataframe(
+    st.session_state.df,
+    st.session_state.get("split_column_enabled_check", False),
+    st.session_state.get("split_column_select"),
+    st.session_state.get("split_primary_delimiter_input", "_"),
+    st.session_state.get("split_secondary_enabled_check", False),
+    st.session_state.get("split_secondary_delimiter_input", "-"),
+)
 
 with filter_container:
     # ==========================================
@@ -492,17 +740,21 @@ with filter_container:
 
     table_col, controls_col = st.columns([4, 1])
     with controls_col:
-        filter_col = st.selectbox("Filter in column", ["All Columns"] + st.session_state.df.columns.tolist())
+        filter_column_options = ["All Columns"] + active_df.columns.tolist()
+        ensure_choice("filter_column_select", filter_column_options, "All Columns")
+        filter_col = st.selectbox("Filter in column", filter_column_options, key="filter_column_select")
         search_query = st.text_input("Search rows", placeholder="Type to filter...")
 
     if search_query:
         if filter_col == "All Columns":
-            mask = st.session_state.df.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
+            mask = active_df.astype(str).apply(
+                lambda x: x.str.contains(search_query, case=False, na=False)
+            ).any(axis=1)
         else:
-            mask = st.session_state.df[filter_col].astype(str).str.contains(search_query, case=False, na=False)
-        filtered_df = st.session_state.df[mask].copy()
+            mask = active_df[filter_col].astype(str).str.contains(search_query, case=False, na=False)
+        filtered_df = active_df[mask].copy()
     else:
-        filtered_df = st.session_state.df.copy()
+        filtered_df = active_df.copy()
 
     df_for_selection = filtered_df.copy()
     df_for_selection.insert(0, "Print", True)
@@ -511,7 +763,7 @@ with filter_container:
         edited_df = st.data_editor(
             df_for_selection,
             column_config={"Print": st.column_config.CheckboxColumn("Print", default=True)},
-            disabled=st.session_state.df.columns,
+            disabled=active_df.columns.tolist(),
             use_container_width=True,
             hide_index=True,
             key="editor"
@@ -527,11 +779,60 @@ st.sidebar.title("Label Setup")
 
 # 1. Data Fields Category
 with st.sidebar.expander("Data Fields", expanded=True):
+    visible_column_options = active_df.columns.tolist()
+    visible_column_defaults = (
+        visible_column_options[:2]
+        if len(visible_column_options) > 1
+        else visible_column_options
+    )
+    ensure_multiselect_choices(
+        "visible_columns_multiselect",
+        visible_column_options,
+        visible_column_defaults,
+    )
     visible_columns = st.multiselect(
         "Columns to display",
-        st.session_state.df.columns.tolist(),
-        default=st.session_state.df.columns.tolist()[:2] if len(st.session_state.df.columns) > 1 else st.session_state.df.columns.tolist(),
+        visible_column_options,
+        key="visible_columns_multiselect",
     )
+
+    split_column_enabled = st.checkbox(
+        "Split a column into new fields",
+        key="split_column_enabled_check",
+        help="Create extra columns from an ID-like field while keeping the original column.",
+    )
+
+    if split_column_enabled:
+        split_column = st.selectbox(
+            "Column to split",
+            split_column_options,
+            key="split_column_select",
+            help="Defaults to the first matching PlantID, Plant_ID, UID, or ID column when available.",
+        )
+        primary_delimiter = st.text_input(
+            "First delimiter",
+            key="split_primary_delimiter_input",
+            help="Any character or string can be used, for example _, -, /, or |.",
+        )
+        split_secondary_enabled = st.checkbox(
+            "Apply a second delimiter",
+            key="split_secondary_enabled_check",
+        )
+        if split_secondary_enabled:
+            secondary_delimiter = st.text_input(
+                "Second delimiter",
+                key="split_secondary_delimiter_input",
+                help="This is applied to any first-pass split values that still contain the second delimiter.",
+            )
+
+        if not primary_delimiter:
+            st.warning("Enter a first delimiter to generate split columns.")
+        elif generated_split_columns:
+            st.caption(
+                "Generated columns: " + ", ".join(generated_split_columns + generated_secondary_split_columns)
+            )
+        else:
+            st.caption("No new columns were created with the current delimiter settings.")
 
     row_index = st.number_input(
         "Preview row",
@@ -539,6 +840,18 @@ with st.sidebar.expander("Data Fields", expanded=True):
         max_value=max(1, len(filtered_df)),
         value=1,
     ) - 1
+
+    if split_column_enabled and generated_split_columns and not filtered_df.empty:
+        preview_columns = generated_split_columns + generated_secondary_split_columns
+        preview_values = [str(filtered_df.iloc[row_index][split_column])]
+        preview_values.extend(
+            str(filtered_df.iloc[row_index][column])
+            for column in preview_columns
+            if str(filtered_df.iloc[row_index][column])
+        )
+        st.caption(
+            "Split preview: " + " | ".join(f'"{value}"' for value in preview_values)
+        )
     
     repeat_count = st.number_input(
         "Copies per label",
@@ -613,7 +926,7 @@ with st.sidebar.expander("Code Settings", expanded=False):
     ensure_choice("code_type_select", code_type_options, TEMPLATE_DEFAULTS["code_type_select"])
     code_type = st.selectbox("Code type", code_type_options, key="code_type_select")
     if code_type != "None":
-        code_column_options = st.session_state.df.columns.tolist()
+        code_column_options = active_df.columns.tolist()
         ensure_choice("code_column_select", code_column_options, code_column_options[0])
         code_column = st.selectbox("Code column", code_column_options, key="code_column_select")
     else:
@@ -653,10 +966,31 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
     label_font = st.selectbox("Label font", label_font_options, key="label_font_select")
     ensure_int_range("label_font_size_slider", TEMPLATE_DEFAULTS["label_font_size_slider"], 4, 14)
     label_font_size = st.slider("Label font size (pt)", 4, 14, key="label_font_size_slider")
-    highlight_options = ["None"] + st.session_state.df.columns.tolist()
+    highlight_options = ["None"] + active_df.columns.tolist()
     ensure_choice("highlight_column_select", highlight_options, TEMPLATE_DEFAULTS["highlight_column_select"])
     highlight_column = st.selectbox("Highlight column", highlight_options, key="highlight_column_select")
     highlight_column = None if highlight_column == "None" else highlight_column
+    rename_columns_enabled = st.checkbox(
+        "Rename displayed columns",
+        key="rename_columns_check",
+        help="Override the labels printed on the preview and exported labels without changing the dataset itself.",
+    )
+    if rename_columns_enabled:
+        column_label_overrides = dict(st.session_state.get("column_label_overrides", {}))
+        for column in visible_columns:
+            override_key = f"column_label_override_{column}"
+            if override_key not in st.session_state:
+                st.session_state[override_key] = column_label_overrides.get(column, "")
+            override_value = st.text_input(
+                f"Display label for {column}",
+                key=override_key,
+                placeholder=column,
+            ).strip()
+            if override_value and override_value != column:
+                column_label_overrides[column] = override_value
+            else:
+                column_label_overrides.pop(column, None)
+        st.session_state["column_label_overrides"] = column_label_overrides
 
     if highlight_column:
         ensure_int_range("highlight_padding_slider", TEMPLATE_DEFAULTS["highlight_padding_slider"], 0, 20)
@@ -672,6 +1006,13 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
     else:
         sidebar_factor = 0
     show_border = True
+    if rename_columns_enabled:
+        column_label_map = {
+            column: st.session_state["column_label_overrides"].get(column, column)
+            for column in active_df.columns.tolist()
+        }
+    else:
+        column_label_map = {column: column for column in active_df.columns.tolist()}
 
     template_json = json.dumps(
         build_template_payload(label_width_mm=label_width, label_height_mm=label_height),
@@ -717,7 +1058,8 @@ with preview_container:
             qr_size, barcode_width, barcode_height, row_height_factor,
             sidebar_factor, highlight_padding, show_border=show_border,
             show_column_names=show_column_names, side_highlight=side_highlight,
-            qr_left_offset=qr_left_offset, text_left_offset=text_left_offset
+            qr_left_offset=qr_left_offset, text_left_offset=text_left_offset,
+            column_label_map=column_label_map,
         )
         c_prev.save()
         buffer.seek(0)
@@ -741,7 +1083,7 @@ with export_container:
                 label_font, label_font_size, label_width, label_height, qr_size,
                 barcode_width, barcode_height, row_height_factor, sidebar_factor,
                 highlight_padding, show_border, show_column_names, side_highlight,
-                qr_left_offset, text_left_offset, page_format, repeat_count
+                qr_left_offset, text_left_offset, column_label_map, page_format, repeat_count
             )
             st.success(f"PDF generated for {len(df_to_use)} unique records ({len(df_to_use)*repeat_count} total labels).")
             st.download_button(
@@ -750,3 +1092,5 @@ with export_container:
                 file_name=f"multi_labels_{page_format}.pdf",
                 mime="application/pdf"
             )
+
+render_version_footer()
