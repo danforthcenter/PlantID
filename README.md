@@ -15,7 +15,7 @@ https://plantid-label-designer.streamlit.app
 ## Installation (Local)
 Clone this repository
 ```bash
-git clone https://github.com/marcusdgriff/PlantID.git
+git clone https://github.com/danforthcenter/PlantID.git
 cd PlantID/PlantID-LabelDesigner-streamlit
 ```
 Install required packages
