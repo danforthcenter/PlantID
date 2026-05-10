@@ -27,8 +27,15 @@ if "loaded_template_metadata" not in st.session_state:
     st.session_state.loaded_template_metadata = None
 
 APP_NAME = "PlantID Label Designer"
-APP_VERSION = "1.2.0"
-TEMPLATE_VERSION = 2
+APP_VERSION = "1.3.1"
+TEMPLATE_VERSION = 3
+
+HIGHLIGHT_COLOR_OPTIONS = ["Black", "White"]
+HIGHLIGHT_COLOR_MAP = {
+    "Black": colors.black,
+    "White": colors.white,
+}
+
 TEMPLATE_DEFAULTS = {
     "split_column_enabled_check": False,
     "split_column_select": None,
@@ -46,6 +53,7 @@ TEMPLATE_DEFAULTS = {
     "label_height_in_slider": 1.37,
     "code_type_select": "QR",
     "code_column_select": None,
+    "code_position_select": "Left",
     "qr_size_slider": 18,
     "barcode_width_slider": 25,
     "barcode_height_slider": 10,
@@ -56,9 +64,13 @@ TEMPLATE_DEFAULTS = {
     "label_font_select": "Helvetica",
     "label_font_size_slider": 7,
     "highlight_column_select": "None",
+    "highlight_color_select": "Black",
     "highlight_padding_slider": 2,
     "side_highlight_check": False,
     "sidebar_factor_slider": 0.1,
+    "show_border_check": True,
+    "label_padding_slider": 4,
+    "col_name_width_ratio_slider": 35,
 }
 PREFERRED_SPLIT_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID"]
 
@@ -68,7 +80,6 @@ def build_template_payload(label_width_mm=None, label_height_mm=None):
         key: st.session_state.get(key, default)
         for key, default in TEMPLATE_DEFAULTS.items()
     }
-    # Save normalized label dimensions so load does not depend on preset display text.
     if label_width_mm is not None and label_height_mm is not None:
         width_mm = float(label_width_mm)
         height_mm = float(label_height_mm)
@@ -119,7 +130,6 @@ def load_template_payload(uploaded_file):
         "template_version": parsed.get("template_version", "Not recorded"),
     }
 
-    # Reset dynamic rename inputs so loaded templates repopulate every renamed column.
     for key in list(st.session_state.keys()):
         if str(key).startswith("column_label_override_"):
             del st.session_state[key]
@@ -128,7 +138,6 @@ def load_template_payload(uploaded_file):
         for column, label in st.session_state["column_label_overrides"].items():
             st.session_state[f"column_label_override_{column}"] = label
 
-    # Backfill equivalent units and force Custom so loaded dimensions are respected.
     if "label_width_mm_slider" in applied and "label_height_mm_slider" in applied:
         try:
             w_mm = float(applied["label_width_mm_slider"])
@@ -361,6 +370,7 @@ def build_split_dataframe(
 
     return result[ordered_columns], primary_columns, secondary_columns
 
+
 # ======================================================
 # Draw a single label directly onto a ReportLab canvas
 # ======================================================
@@ -391,6 +401,9 @@ def draw_label_on_canvas(
     qr_left_offset=2,
     text_left_offset=0,
     column_label_map=None,
+    highlight_color=None,
+    col_name_width_ratio=0.35,
+    code_position="Left",
 ):
     def font_variant(base_font, variant):
         variants = {
@@ -415,6 +428,9 @@ def draw_label_on_canvas(
         }
         return variants.get(base_font, variants["Helvetica"]).get(variant, base_font)
 
+    if highlight_color is None:
+        highlight_color = colors.black
+
     lw_pt = label_width * mm
     lh_pt = label_height * mm
     pad_pt = padding * mm
@@ -428,7 +444,7 @@ def draw_label_on_canvas(
         c.rect(x, y, lw_pt, lh_pt, stroke=1, fill=0)
         c.restoreState()
 
-    # ---- 2. Sidebar Logic (Isolated with saveState) ----
+    # ---- 2. Sidebar Logic ----
     side_col_width = 0
     if side_highlight and highlight_column:
         side_col_width = lw_pt * sidebar_factor
@@ -436,14 +452,12 @@ def draw_label_on_canvas(
         value = str(df_row[highlight_column])
         font_size = label_font_size
 
-        # Calculate sidebar geometry
         val_w = stringWidth(value, font_variant(label_font, "bold"), font_size) + highlight_padding
         nam_w = stringWidth(f"{col_name}:", font_variant(label_font, "italic"), font_size)
         gap = 1 * mm
         total_h = nam_w + gap + val_w
         sidebar_bottom = y + (lh_pt - total_h) / 2
 
-        # Draw Side Label text
         c.saveState()
         c.setFillColor(colors.black)
         c.setFont(font_variant(label_font, "italic"), font_size)
@@ -452,12 +466,18 @@ def draw_label_on_canvas(
         c.drawCentredString(0, 0, f"{col_name}:")
         c.restoreState()
 
-        # Draw Side Value Box
         val_rect_y = sidebar_bottom + nam_w + gap
+        is_white_strip = highlight_color == colors.white
         c.saveState()
-        c.setFillColor(colors.black)
-        c.rect(x, val_rect_y, side_col_width, val_w, fill=1, stroke=0)
-        c.setFillColor(colors.white)
+        c.setFillColor(highlight_color)
+        if is_white_strip:
+            c.setStrokeColor(colors.black)
+            c.setLineWidth(0.5)
+            c.rect(x, val_rect_y, side_col_width, val_w, fill=1, stroke=1)
+            c.setFillColor(colors.black)
+        else:
+            c.rect(x, val_rect_y, side_col_width, val_w, fill=1, stroke=0)
+            c.setFillColor(colors.white)
         c.setFont(font_variant(label_font, "bold"), font_size)
         c.translate(x + side_col_width / 2, val_rect_y + val_w / 2)
         c.rotate(90)
@@ -465,71 +485,94 @@ def draw_label_on_canvas(
         c.restoreState()
 
     # ---- 3. Code (QR/Barcode) Logic ----
-    code_x = x + side_col_width + (qr_left_offset * mm)
     text_x = x + side_col_width + pad_pt
+    text_right = x + lw_pt - pad_pt  # default: text fills to right edge
 
     if code_column is not None and code_type != "None":
         val = str(df_row[code_column])
-        
+
         if code_type == "QR":
             qr_pt = qr_size * mm
             code_y = y + (lh_pt - qr_pt) / 2
             qrobj = qr.QrCodeWidget(val)
             b = qrobj.getBounds()
-            scale = qr_pt / max(b[2]-b[0], b[3]-b[1])
+            scale = qr_pt / max(b[2] - b[0], b[3] - b[1])
             d = Drawing(qr_pt, qr_pt, transform=[scale, 0, 0, scale, 0, 0])
             d.add(qrobj)
+
+            if code_position == "Right":
+                code_x = x + lw_pt - qr_pt - (qr_left_offset * mm)
+                text_right = code_x - 2 * mm
+            else:
+                code_x = x + side_col_width + (qr_left_offset * mm)
+                text_x = code_x + qr_pt + 2 * mm
             renderPDF.draw(d, c, code_x, code_y)
-            text_x = code_x + qr_pt + 2 * mm
 
         elif code_type == "Barcode":
             bw_pt = barcode_width * mm
             bh_pt = barcode_height * mm
             code_y = y + (lh_pt - bh_pt) / 2
-            
-            # Draw directly to canvas
             bc = code128.Code128(
                 val,
                 barHeight=bh_pt,
                 barWidth=bw_pt / max(len(val) * 11, 1),
-                humanReadable=False
+                humanReadable=False,
             )
-            bc.drawOn(c, code_x, code_y)
-            text_x = code_x + bw_pt + 2 * mm
 
-    text_x += (text_left_offset * mm)
+            if code_position == "Right":
+                code_x = x + lw_pt - bw_pt - (qr_left_offset * mm)
+                text_right = code_x - 2 * mm
+            else:
+                code_x = x + side_col_width + (qr_left_offset * mm)
+                text_x = code_x + bw_pt + 2 * mm
+            bc.drawOn(c, code_x, code_y)
+
+    text_x += text_left_offset * mm
+    avail_w = text_right - text_x
 
     # ---- 4. Text Rows Logic ----
     row_count = max(len(visible_columns), 1)
     row_height = ((lh_pt - 2 * pad_pt) / row_count) * row_height_factor
     text_y_start = y + lh_pt - pad_pt - row_height * 0.1
-    avail_w = lw_pt - (text_x - x) - pad_pt
+
+    name_right_x = text_x + avail_w * col_name_width_ratio
+    val_left_x = text_x + avail_w * (col_name_width_ratio + 0.05)
 
     for idx, col_name in enumerate(visible_columns):
         val = str(df_row[col_name])
         display_name = column_label_map.get(col_name, col_name)
         y_pos = text_y_start - idx * row_height
-        
+
         c.saveState()
         if show_column_names:
             c.setFont(font_variant(label_font, "italic"), label_font_size)
             c.setFillColor(colors.black)
-            c.drawRightString(text_x + avail_w * 0.35, y_pos, f"{display_name}:")
+            c.drawRightString(name_right_x, y_pos, f"{display_name}:")
+
+        draw_x = val_left_x if show_column_names else text_x
 
         if col_name == highlight_column:
             c.setFont(font_variant(label_font, "bold"), label_font_size)
             v_w = stringWidth(val, font_variant(label_font, "bold"), label_font_size) + highlight_padding
-            c.setFillColor(colors.black)
             highlight_height = max(6, label_font_size + 2)
             highlight_y = y_pos - (label_font_size * 0.3)
-            c.rect(text_x + avail_w * 0.4 - 2, highlight_y, v_w, highlight_height, fill=1)
-            c.setFillColor(colors.white)
-            c.drawString(text_x + avail_w * 0.4, y_pos, val)
+            is_white = highlight_color == colors.white
+            c.setFillColor(highlight_color)
+            if is_white:
+                c.setStrokeColor(colors.black)
+                c.setLineWidth(0.5)
+                c.rect(draw_x - 2, highlight_y, v_w, highlight_height, fill=1, stroke=1)
+                c.setFillColor(colors.black)
+            else:
+                c.rect(draw_x - 2, highlight_y, v_w, highlight_height, fill=1, stroke=0)
+                c.setFillColor(colors.white)
+            c.drawString(draw_x, y_pos, val)
         else:
             c.setFont(font_variant(label_font, "regular"), label_font_size)
             c.setFillColor(colors.black)
-            c.drawString(text_x + avail_w * 0.4, y_pos, val)
+            c.drawString(draw_x, y_pos, val)
         c.restoreState()
+
 
 # ======================================================
 # Multi-label PDF sheet
@@ -550,33 +593,42 @@ def generate_sheet_direct(
     row_height_factor,
     sidebar_factor,
     highlight_padding,
+    padding=4,
     show_border=True,
     show_column_names=True,
     side_highlight=False,
     qr_left_offset=2,
     text_left_offset=0,
     column_label_map=None,
+    highlight_color=None,
+    col_name_width_ratio=0.35,
+    code_position="Left",
     page_format="LabelPrinter",
+    page_margin=5,
+    label_gap=2,
     repeat_count=1,
 ):
-    # Page size logic
     if page_format == "A4":
         page_width, page_height = A4
-        margin = 5 * mm
+        margin = page_margin * mm
+        gap = label_gap * mm
     elif page_format == "Letter":
         from reportlab.lib.pagesizes import letter
         page_width, page_height = letter
-        margin = 5 * mm
+        margin = page_margin * mm
+        gap = label_gap * mm
     elif page_format == "LabelPrinter":
-        # Exact label size, no margin
         page_width = label_width * mm
         page_height = label_height * mm
         margin = 0
+        gap = 0
     else:
         page_width, page_height = A4
-        margin = 5 * mm
+        margin = page_margin * mm
+        gap = label_gap * mm
 
-    c = canvas.Canvas("multi_labels.pdf", pagesize=(page_width, page_height))
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=(page_width, page_height))
 
     x = margin
     y = page_height - label_height * mm - margin
@@ -599,25 +651,30 @@ def generate_sheet_direct(
                 row_height_factor,
                 sidebar_factor,
                 highlight_padding,
+                padding=padding,
                 show_border=show_border,
                 show_column_names=show_column_names,
                 side_highlight=side_highlight,
                 qr_left_offset=qr_left_offset,
                 text_left_offset=text_left_offset,
                 column_label_map=column_label_map,
+                highlight_color=highlight_color,
+                col_name_width_ratio=col_name_width_ratio,
+                code_position=code_position,
             )
 
-            x += label_width * mm + margin
-            if x + label_width * mm > page_width:
+            x += label_width * mm + gap
+            if x + label_width * mm > page_width - margin:
                 x = margin
-                y -= label_height * mm + margin
+                y -= label_height * mm + gap
                 if y < margin:
                     c.showPage()
                     x = margin
                     y = page_height - label_height * mm - margin
 
     c.save()
-    return "multi_labels.pdf"
+    buffer.seek(0)
+    return buffer
 
 
 # ======================================================
@@ -635,8 +692,8 @@ if st.session_state.df is None:
         "from a CSV file. Labels can be optionally designed with QR and Barcodes and exported in various sizes "
         "for label or paper printing."
     )
-    
-    st.info("Choose a CSV or click 'Use default CSV'")
+
+    st.info("Choose a CSV or click 'Use example CSV'")
     uploaded_file = st.file_uploader("Browse files", type=["csv"], label_visibility="visible")
     if st.button("Use example CSV", key="use_default_csv_btn"):
         st.session_state.start_selected_source = "Example dataset"
@@ -672,7 +729,6 @@ if st.session_state.df is None:
     if st.button("Go", key="start_go_btn"):
         if st.session_state.start_selected_source == "Example dataset":
             example_path = os.path.join(os.path.dirname(__file__), "PV1_metadata.csv")
-            # Create a simple example if file doesn't exist
             if os.path.exists(example_path):
                 st.session_state.df = pd.read_csv(example_path)
             else:
@@ -689,7 +745,7 @@ if st.session_state.df is None:
             st.session_state.data_source = "Uploaded CSV"
             st.rerun()
         else:
-            st.error("Select a CSV upload or click 'Use default CSV' before clicking Go.")
+            st.error("Select a CSV upload or click 'Use example CSV' before clicking Go.")
 
     render_version_footer()
     st.stop()
@@ -706,18 +762,9 @@ split_column_options = st.session_state.df.columns.tolist()
 default_split_column = detect_default_split_column(split_column_options)
 ensure_bool("split_column_enabled_check", TEMPLATE_DEFAULTS["split_column_enabled_check"])
 ensure_choice("split_column_select", split_column_options, default_split_column)
-ensure_text_value(
-    "split_primary_delimiter_input",
-    TEMPLATE_DEFAULTS["split_primary_delimiter_input"],
-)
-ensure_bool(
-    "split_secondary_enabled_check",
-    TEMPLATE_DEFAULTS["split_secondary_enabled_check"],
-)
-ensure_text_value(
-    "split_secondary_delimiter_input",
-    TEMPLATE_DEFAULTS["split_secondary_delimiter_input"],
-)
+ensure_text_value("split_primary_delimiter_input", TEMPLATE_DEFAULTS["split_primary_delimiter_input"])
+ensure_bool("split_secondary_enabled_check", TEMPLATE_DEFAULTS["split_secondary_enabled_check"])
+ensure_text_value("split_secondary_delimiter_input", TEMPLATE_DEFAULTS["split_secondary_delimiter_input"])
 ensure_bool("rename_columns_check", TEMPLATE_DEFAULTS["rename_columns_check"])
 ensure_dict_value("column_label_overrides", TEMPLATE_DEFAULTS["column_label_overrides"])
 
@@ -731,11 +778,7 @@ active_df, generated_split_columns, generated_secondary_split_columns = build_sp
 )
 
 with filter_container:
-    # ==========================================
-    # 3. Filter & Select Rows
-    # ==========================================
     st.subheader("3. Filter & Select Rows")
-
     st.write("Check the **Print** box for rows you want to include in the PDF:")
 
     table_col, controls_col = st.columns([4, 1])
@@ -777,7 +820,7 @@ with filter_container:
 # ---- Sidebar ----
 st.sidebar.title("Label Setup")
 
-# 1. Data Fields Category
+# 1. Data Fields
 with st.sidebar.expander("Data Fields", expanded=True):
     visible_column_options = active_df.columns.tolist()
     visible_column_defaults = (
@@ -822,7 +865,7 @@ with st.sidebar.expander("Data Fields", expanded=True):
             secondary_delimiter = st.text_input(
                 "Second delimiter",
                 key="split_secondary_delimiter_input",
-                help="This is applied to any first-pass split values that still contain the second delimiter.",
+                help="Applied to any first-pass split values that still contain the second delimiter.",
             )
 
         if not primary_delimiter:
@@ -852,16 +895,16 @@ with st.sidebar.expander("Data Fields", expanded=True):
         st.caption(
             "Split preview: " + " | ".join(f'"{value}"' for value in preview_values)
         )
-    
+
     repeat_count = st.number_input(
         "Copies per label",
         min_value=1,
         max_value=100,
         value=1,
-        help="How many times each record will be printed."
+        help="How many times each record will be printed.",
     )
 
-# 2. Label Size Category
+# 2. Label Size
 with st.sidebar.expander("Label Size", expanded=False):
     UNIT_MM = "Metric (mm)"
     UNIT_INCH_FRACTIONAL = "Imperial (inches)"
@@ -890,47 +933,62 @@ with st.sidebar.expander("Label Size", expanded=False):
         from fractions import Fraction
         whole = int(value_in)
         frac = Fraction(value_in - whole).limit_denominator(16)
-        if frac.numerator == 0: return str(whole)
-        if whole == 0: return f"{frac.numerator}/{frac.denominator}"
+        if frac.numerator == 0:
+            return str(whole)
+        if whole == 0:
+            return f"{frac.numerator}/{frac.denominator}"
         return f"{whole} {frac.numerator}/{frac.denominator}"
 
     def format_preset_label(name, display_w_mm, display_h_mm, units_mode):
-        if units_mode == UNIT_MM: return f"{name} ({display_w_mm} × {display_h_mm} mm)"
+        if units_mode == UNIT_MM:
+            return f"{name} ({display_w_mm} × {display_h_mm} mm)"
         w_in, h_in = display_w_mm / 25.4, display_h_mm / 25.4
-        if units_mode == UNIT_INCH_FRACTIONAL: return f"{name} ({format_fractional_inches(w_in)} × {format_fractional_inches(h_in)} inches)"
+        if units_mode == UNIT_INCH_FRACTIONAL:
+            return f"{name} ({format_fractional_inches(w_in)} × {format_fractional_inches(h_in)} inches)"
         return f"{name} ({w_in:.3f} × {h_in:.3f} inches)"
 
     preset_options = ["Custom"] + [format_preset_label(n, w, h, units) for n, w, h, _, _ in LABEL_PRESETS]
     ensure_choice("preset_select", preset_options, TEMPLATE_DEFAULTS["preset_select"])
     preset = st.selectbox("Preset", preset_options, key="preset_select")
-    
+
     if preset == "Custom":
         if units == UNIT_MM:
-            ensure_int_range("label_width_mm_slider", TEMPLATE_DEFAULTS["label_width_mm_slider"], 10, 140)
-            ensure_int_range("label_height_mm_slider", TEMPLATE_DEFAULTS["label_height_mm_slider"], 10, 140)
-            label_width = st.slider("Width (mm)", 10, 140, step=1, key="label_width_mm_slider")
-            label_height = st.slider("Height (mm)", 10, 140, step=1, key="label_height_mm_slider")
+            ensure_int_range("label_width_mm_slider", TEMPLATE_DEFAULTS["label_width_mm_slider"], 10, 200)
+            ensure_int_range("label_height_mm_slider", TEMPLATE_DEFAULTS["label_height_mm_slider"], 10, 200)
+            label_width = st.slider("Width (mm)", 10, 200, step=1, key="label_width_mm_slider")
+            label_height = st.slider("Height (mm)", 10, 200, step=1, key="label_height_mm_slider")
         else:
             step_in = 1 / 16 if units == UNIT_INCH_FRACTIONAL else 0.01
-            ensure_float_range("label_width_in_slider", TEMPLATE_DEFAULTS["label_width_in_slider"], 0.4, 5.5)
-            ensure_float_range("label_height_in_slider", TEMPLATE_DEFAULTS["label_height_in_slider"], 0.4, 5.5)
-            label_width_in = st.slider("Width (in)", 0.4, 5.5, step=step_in, key="label_width_in_slider")
-            label_height_in = st.slider("Height (in)", 0.4, 5.5, step=step_in, key="label_height_in_slider")
+            ensure_float_range("label_width_in_slider", TEMPLATE_DEFAULTS["label_width_in_slider"], 0.4, 7.9)
+            ensure_float_range("label_height_in_slider", TEMPLATE_DEFAULTS["label_height_in_slider"], 0.4, 7.9)
+            label_width_in = st.slider("Width (in)", 0.4, 7.9, step=step_in, key="label_width_in_slider")
+            label_height_in = st.slider("Height (in)", 0.4, 7.9, step=step_in, key="label_height_in_slider")
             label_width, label_height = label_width_in * 25.4, label_height_in * 25.4
     else:
-        label_width, label_height = LABEL_PRESETS[preset_options.index(preset)-1][3:5]
+        label_width, label_height = LABEL_PRESETS[preset_options.index(preset) - 1][3:5]
 
-# 3. Code Settings Category
+# 3. Code Settings
 with st.sidebar.expander("Code Settings", expanded=False):
     code_type_options = ["QR", "Barcode", "None"]
     ensure_choice("code_type_select", code_type_options, TEMPLATE_DEFAULTS["code_type_select"])
     code_type = st.selectbox("Code type", code_type_options, key="code_type_select")
+
     if code_type != "None":
         code_column_options = active_df.columns.tolist()
         ensure_choice("code_column_select", code_column_options, code_column_options[0])
         code_column = st.selectbox("Code column", code_column_options, key="code_column_select")
+
+        code_position_options = ["Left", "Right"]
+        ensure_choice("code_position_select", code_position_options, TEMPLATE_DEFAULTS["code_position_select"])
+        code_position = st.selectbox(
+            "Code position",
+            code_position_options,
+            key="code_position_select",
+            help="Place the QR or barcode on the left or right side of the label.",
+        )
     else:
         code_column = None
+        code_position = "Left"
 
     if code_type == "QR":
         qr_max = max(8, int(label_height - 2))
@@ -950,30 +1008,79 @@ with st.sidebar.expander("Code Settings", expanded=False):
 
     max_qr_left_offset = int(label_width / 2)
     ensure_int_range("qr_left_offset_slider", TEMPLATE_DEFAULTS["qr_left_offset_slider"], 0, max_qr_left_offset)
-    qr_left_offset = st.slider("Code left offset (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider")
+    qr_left_offset = st.slider("Code offset from edge (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider")
 
-# 4. Design and Aesthetics Category
+# 4. Design & Aesthetics
 with st.sidebar.expander("Design & Aesthetics", expanded=False):
+    ensure_bool("show_border_check", TEMPLATE_DEFAULTS["show_border_check"])
+    show_border = st.checkbox("Show label border", key="show_border_check")
+
     ensure_bool("show_column_names_check", TEMPLATE_DEFAULTS["show_column_names_check"])
     show_column_names = st.checkbox("Show column names", key="show_column_names_check")
+
     ensure_float_range("row_height_factor_slider", TEMPLATE_DEFAULTS["row_height_factor_slider"], 0.1, 1.5)
     row_height_factor = st.slider("Row height factor", 0.1, 1.5, key="row_height_factor_slider")
+
+    ensure_int_range("label_padding_slider", TEMPLATE_DEFAULTS["label_padding_slider"], 0, 15)
+    label_padding = st.slider(
+        "Inner padding (mm)", 0, 15, key="label_padding_slider",
+        help="Space between the label edge and its content.",
+    )
+
+    if show_column_names:
+        ensure_int_range("col_name_width_ratio_slider", TEMPLATE_DEFAULTS["col_name_width_ratio_slider"], 0, 60)
+        col_name_width_ratio = st.slider(
+            "Column name width (%)", 0, 60, key="col_name_width_ratio_slider",
+            help="Percentage of text area reserved for column name labels.",
+        ) / 100.0
+    else:
+        col_name_width_ratio = TEMPLATE_DEFAULTS["col_name_width_ratio_slider"] / 100.0
+
     max_text_left_offset = int(label_width / 2)
     ensure_int_range("text_left_offset_slider", TEMPLATE_DEFAULTS["text_left_offset_slider"], 0, max_text_left_offset)
     text_left_offset = st.slider("Text left offset (mm)", 0, max_text_left_offset, key="text_left_offset_slider")
+
     label_font_options = ["Helvetica", "Times-Roman", "Courier"]
     ensure_choice("label_font_select", label_font_options, TEMPLATE_DEFAULTS["label_font_select"])
     label_font = st.selectbox("Label font", label_font_options, key="label_font_select")
-    ensure_int_range("label_font_size_slider", TEMPLATE_DEFAULTS["label_font_size_slider"], 4, 14)
-    label_font_size = st.slider("Label font size (pt)", 4, 14, key="label_font_size_slider")
+
+    ensure_int_range("label_font_size_slider", TEMPLATE_DEFAULTS["label_font_size_slider"], 4, 20)
+    label_font_size = st.slider("Label font size (pt)", 4, 20, key="label_font_size_slider")
+
     highlight_options = ["None"] + active_df.columns.tolist()
     ensure_choice("highlight_column_select", highlight_options, TEMPLATE_DEFAULTS["highlight_column_select"])
     highlight_column = st.selectbox("Highlight column", highlight_options, key="highlight_column_select")
     highlight_column = None if highlight_column == "None" else highlight_column
+
+    if highlight_column:
+        ensure_choice("highlight_color_select", HIGHLIGHT_COLOR_OPTIONS, TEMPLATE_DEFAULTS["highlight_color_select"])
+        highlight_color_name = st.selectbox(
+            "Highlight color",
+            HIGHLIGHT_COLOR_OPTIONS,
+            key="highlight_color_select",
+            help="Color used for the inline and side strip highlight.",
+        )
+        highlight_color = HIGHLIGHT_COLOR_MAP[highlight_color_name]
+
+        ensure_int_range("highlight_padding_slider", TEMPLATE_DEFAULTS["highlight_padding_slider"], 0, 20)
+        ensure_bool("side_highlight_check", TEMPLATE_DEFAULTS["side_highlight_check"])
+        highlight_padding = st.slider("Highlight padding", 0, 20, key="highlight_padding_slider")
+        side_highlight = st.checkbox("Side strip highlight", key="side_highlight_check")
+    else:
+        highlight_color = colors.black
+        highlight_padding = 0
+        side_highlight = False
+
+    if side_highlight:
+        ensure_float_range("sidebar_factor_slider", TEMPLATE_DEFAULTS["sidebar_factor_slider"], 0.05, 0.5)
+        sidebar_factor = st.slider("Sidebar width factor", 0.05, 0.5, key="sidebar_factor_slider")
+    else:
+        sidebar_factor = 0
+
     rename_columns_enabled = st.checkbox(
         "Rename displayed columns",
         key="rename_columns_check",
-        help="Override the labels printed on the preview and exported labels without changing the dataset itself.",
+        help="Override the labels printed on the preview and exported labels without changing the dataset.",
     )
     if rename_columns_enabled:
         column_label_overrides = dict(st.session_state.get("column_label_overrides", {}))
@@ -992,28 +1099,7 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
                 column_label_overrides.pop(column, None)
         st.session_state["column_label_overrides"] = column_label_overrides
 
-    if highlight_column:
-        ensure_int_range("highlight_padding_slider", TEMPLATE_DEFAULTS["highlight_padding_slider"], 0, 20)
-        ensure_bool("side_highlight_check", TEMPLATE_DEFAULTS["side_highlight_check"])
-        highlight_padding = st.slider("Highlight padding", 0, 20, key="highlight_padding_slider")
-        side_highlight = st.checkbox("Side strip highlight", key="side_highlight_check")
-    else:
-        highlight_padding = side_highlight = 0
-
-    if side_highlight:
-        ensure_float_range("sidebar_factor_slider", TEMPLATE_DEFAULTS["sidebar_factor_slider"], 0.05, 0.5)
-        sidebar_factor = st.slider("Sidebar width factor", 0.05, 0.5, key="sidebar_factor_slider")
-    else:
-        sidebar_factor = 0
-    show_border = True
-    if rename_columns_enabled:
-        column_label_map = {
-            column: st.session_state["column_label_overrides"].get(column, column)
-            for column in active_df.columns.tolist()
-        }
-    else:
-        column_label_map = {column: column for column in active_df.columns.tolist()}
-
+    st.divider()
     template_json = json.dumps(
         build_template_payload(label_width_mm=label_width, label_height_mm=label_height),
         indent=2,
@@ -1025,10 +1111,15 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
         mime="application/json",
     )
 
+if rename_columns_enabled:
+    column_label_map = {
+        column: st.session_state["column_label_overrides"].get(column, column)
+        for column in active_df.columns.tolist()
+    }
+else:
+    column_label_map = {column: column for column in active_df.columns.tolist()}
+
 with summary_container:
-    # ==========================================
-    # 1. Dataset Summary
-    # ==========================================
     st.subheader("1. Dataset Summary")
     c1, c2, c3 = st.columns(3)
     c1.metric("Original Rows", len(st.session_state.df))
@@ -1043,9 +1134,6 @@ with summary_container:
             st.rerun()
 
 with preview_container:
-    # ==========================================
-    # 2. Live Preview
-    # ==========================================
     st.subheader("2. Live Preview")
     if not filtered_df.empty:
         buffer = io.BytesIO()
@@ -1056,10 +1144,17 @@ with preview_container:
             visible_columns, code_column, code_type, highlight_column,
             label_font, label_font_size, label_width, label_height,
             qr_size, barcode_width, barcode_height, row_height_factor,
-            sidebar_factor, highlight_padding, show_border=show_border,
-            show_column_names=show_column_names, side_highlight=side_highlight,
-            qr_left_offset=qr_left_offset, text_left_offset=text_left_offset,
+            sidebar_factor, highlight_padding,
+            padding=label_padding,
+            show_border=show_border,
+            show_column_names=show_column_names,
+            side_highlight=side_highlight,
+            qr_left_offset=qr_left_offset,
+            text_left_offset=text_left_offset,
             column_label_map=column_label_map,
+            highlight_color=highlight_color,
+            col_name_width_ratio=col_name_width_ratio,
+            code_position=code_position,
         )
         c_prev.save()
         buffer.seek(0)
@@ -1068,29 +1163,58 @@ with preview_container:
         st.info("No rows match the filter for preview.")
 
 with export_container:
-    # ==========================================
-    # 4. Export Labels / PDF
-    # ==========================================
     st.subheader("4. Export Labels / PDF")
+
     page_format = st.selectbox("Page size / printer", ["A4", "Letter", "LabelPrinter"], index=2)
+
+    page_margin = 5
+    label_gap = 2
+    if page_format in ("A4", "Letter"):
+        col_margin, col_gap = st.columns(2)
+        with col_margin:
+            page_margin = st.number_input(
+                "Page margin (mm)", min_value=0, max_value=30, value=5, step=1,
+                help="Margin around the edge of the page.",
+            )
+        with col_gap:
+            label_gap = st.number_input(
+                "Label gap (mm)", min_value=0, max_value=20, value=2, step=1,
+                help="Gap between adjacent labels on the sheet.",
+            )
 
     if st.button("Generate Multi-Label PDF"):
         if df_to_use.empty:
             st.error("Cannot generate PDF: No rows selected.")
         else:
-            pdf_path = generate_sheet_direct(
+            pdf_buffer = generate_sheet_direct(
                 df_to_use, visible_columns, code_column, code_type, highlight_column,
                 label_font, label_font_size, label_width, label_height, qr_size,
                 barcode_width, barcode_height, row_height_factor, sidebar_factor,
-                highlight_padding, show_border, show_column_names, side_highlight,
-                qr_left_offset, text_left_offset, column_label_map, page_format, repeat_count
+                highlight_padding,
+                padding=label_padding,
+                show_border=show_border,
+                show_column_names=show_column_names,
+                side_highlight=side_highlight,
+                qr_left_offset=qr_left_offset,
+                text_left_offset=text_left_offset,
+                column_label_map=column_label_map,
+                highlight_color=highlight_color,
+                col_name_width_ratio=col_name_width_ratio,
+                code_position=code_position,
+                page_format=page_format,
+                page_margin=page_margin,
+                label_gap=label_gap,
+                repeat_count=repeat_count,
             )
-            st.success(f"PDF generated for {len(df_to_use)} unique records ({len(df_to_use)*repeat_count} total labels).")
+            st.success(
+                f"PDF generated for {len(df_to_use)} unique records "
+                f"({len(df_to_use) * repeat_count} total labels)."
+            )
             st.download_button(
                 "Download PDF",
-                data=open(pdf_path, "rb"),
-                file_name=f"multi_labels_{page_format}.pdf",
-                mime="application/pdf"
+                data=pdf_buffer,
+                file_name=f"plantid_labels_{page_format}.pdf",
+                mime="application/pdf",
             )
 
 render_version_footer()
