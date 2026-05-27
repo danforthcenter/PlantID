@@ -25,6 +25,10 @@ if "start_selected_source" not in st.session_state:
     st.session_state.start_selected_source = None
 if "loaded_template_metadata" not in st.session_state:
     st.session_state.loaded_template_metadata = None
+if "start_layout_source" not in st.session_state:
+    st.session_state.start_layout_source = None
+if "layout_uploader_key" not in st.session_state:
+    st.session_state.layout_uploader_key = 0
 
 APP_NAME = "PlantID Label Designer"
 APP_VERSION = "1.3.1"
@@ -165,18 +169,21 @@ def render_version_footer():
     loaded_template = st.session_state.get("loaded_template_metadata")
     footer_text = f"{APP_NAME} v{APP_VERSION} | Template JSON schema v{TEMPLATE_VERSION}"
 
-    if loaded_template:
-        footer_text += (
-            f" | Loaded template: {loaded_template.get('filename', 'template.json')} "
-            f"(saved with {loaded_template.get('app_name', APP_NAME)} "
-            f"v{loaded_template.get('app_version', 'Not recorded')}, "
-            f"JSON schema v{loaded_template.get('template_version', 'Not recorded')})"
-        )
-
     st.caption(footer_text)
+    st.caption(
+        "Source code and documentation: [github.com/danforthcenter/PlantID](https://github.com/danforthcenter/PlantID) "
+        "— can be run locally if downloaded."
+    )
 
     if not loaded_template:
         return
+
+    st.caption(
+        f"Loaded template: {loaded_template.get('filename', 'template.json')} "
+        f"(saved with {loaded_template.get('app_name', APP_NAME)} "
+        f"v{loaded_template.get('app_version', 'Not recorded')}, "
+        f"JSON schema v{loaded_template.get('template_version', 'Not recorded')})"
+    )
 
     version_notes = []
     loaded_app_version = loaded_template.get("app_version")
@@ -692,11 +699,31 @@ if st.session_state.df is None:
         "from a CSV file. Labels can be optionally designed with QR and Barcodes and exported in various sizes "
         "for label or paper printing."
     )
+    st.caption(
+        "Source code and documentation: [github.com/danforthcenter/PlantID](https://github.com/danforthcenter/PlantID) "
+        "— can be run locally if downloaded."
+    )
 
-    st.info("Choose a CSV or click 'Use example CSV'")
+    # ---- Step 1: CSV ----
+    st.subheader("Step 1: Select a Plant Label CSV")
     uploaded_file = st.file_uploader("Browse files", type=["csv"], label_visibility="visible")
-    if st.button("Use example CSV", key="use_default_csv_btn"):
-        st.session_state.start_selected_source = "Example dataset"
+
+    example_csv_path = os.path.join(os.path.dirname(__file__), "PV1_metadata.csv")
+    csv_btn_col, csv_dl_col, _csv_spacer = st.columns([1, 1, 6], gap="small")
+    with csv_btn_col:
+        if st.button("Use example CSV", key="use_default_csv_btn", use_container_width=True):
+            st.session_state.start_selected_source = "Example dataset"
+    with csv_dl_col:
+        if os.path.exists(example_csv_path):
+            with open(example_csv_path, "rb") as _f:
+                st.download_button(
+                    "Download example CSV",
+                    data=_f.read(),
+                    file_name="PV1_metadata.csv",
+                    mime="text/csv",
+                    key="download_example_csv_btn",
+                    use_container_width=True,
+                )
 
     if uploaded_file is not None:
         st.session_state.start_selected_source = "Uploaded CSV"
@@ -708,29 +735,60 @@ if st.session_state.df is None:
     elif st.session_state.start_selected_source == "Example dataset":
         st.success("Loaded data: Example file (PV1_metadata.csv)")
 
-    st.info("Optionally, load a label template saved from a previous session")
-    use_template_layout = st.toggle("Use a template layout", value=False, key="use_template_layout_toggle")
+    # ---- Step 2: Layout ----
+    st.subheader("Step 2: Select a Plant Label Design")
+    st.caption(
+        "Upload a previously saved layout JSON, or use the example layout to get started. "
+        "Label design settings (size, fonts, QR codes, etc.) can be fully customized on the next page."
+    )
 
-    if use_template_layout:
-        template_file = st.file_uploader(
-            "Choose template file",
-            type=["json"],
-            key="start_template_file",
-        )
-        if template_file is not None:
-            _, template_error = load_template_payload(template_file)
-            if template_error:
-                st.error(template_error)
-            else:
-                st.success(f"Loaded template: {template_file.name}")
+    template_file = st.file_uploader(
+        "Upload a layout JSON file",
+        type=["json"],
+        key=f"start_template_file_{st.session_state.layout_uploader_key}",
+    )
+    if template_file is not None:
+        _, template_error = load_template_payload(template_file)
+        if template_error:
+            st.error(template_error)
+        else:
+            st.session_state.start_layout_source = "Uploaded layout"
+            st.success(f"Loaded layout: {template_file.name}")
+    elif st.session_state.start_layout_source == "Uploaded layout":
+        st.session_state.start_layout_source = None
 
-    st.info("When ready, click Go.")
+    if st.button("Use Example Layout JSON", key="use_example_layout_btn"):
+        example_layout_path = os.path.join(os.path.dirname(__file__), "example_layout.json")
+        if os.path.exists(example_layout_path):
+            with open(example_layout_path, "r") as _lf:
+                _layout = json.load(_lf)
+            _settings = _layout.get("settings", _layout)
+            for _key, _default in TEMPLATE_DEFAULTS.items():
+                st.session_state[_key] = _settings.get(_key, _default)
+            st.session_state["loaded_template_metadata"] = {
+                "filename": "example_layout.json",
+                "app_name": _layout.get("app", APP_NAME),
+                "app_version": _layout.get("app_version", APP_VERSION),
+                "template_version": _layout.get("template_version", TEMPLATE_VERSION),
+            }
+        st.session_state.start_layout_source = "Example layout"
+        st.session_state.layout_uploader_key += 1
+        st.rerun()
+
+    if st.session_state.start_layout_source == "Example layout":
+        st.success("Using example layout (default settings)")
+
+    # ---- Step 3: Go ----
+    st.subheader("Step 3: Go")
 
     if st.button("Go", key="start_go_btn"):
-        if st.session_state.start_selected_source == "Example dataset":
-            example_path = os.path.join(os.path.dirname(__file__), "PV1_metadata.csv")
-            if os.path.exists(example_path):
-                st.session_state.df = pd.read_csv(example_path)
+        if st.session_state.start_selected_source is None:
+            st.error("Select a CSV upload or click 'Use example CSV' before clicking Go.")
+        elif st.session_state.start_layout_source is None:
+            st.error("Select a label design: upload a JSON layout file or click 'Use Example Layout JSON'.")
+        elif st.session_state.start_selected_source == "Example dataset":
+            if os.path.exists(example_csv_path):
+                st.session_state.df = pd.read_csv(example_csv_path)
             else:
                 st.session_state.df = pd.DataFrame({
                     "ID": ["P001", "P002", "P003", "P004"],
@@ -778,7 +836,7 @@ active_df, generated_split_columns, generated_secondary_split_columns = build_sp
 )
 
 with filter_container:
-    st.subheader("3. Filter & Select Rows")
+    st.subheader("2. Filter & Select Rows")
     st.write("Check the **Print** box for rows you want to include in the PDF:")
 
     table_col, controls_col = st.columns([4, 1])
@@ -818,7 +876,6 @@ with filter_container:
         st.warning("No rows selected for printing. Please filter or check boxes above.")
 
 # ---- Sidebar ----
-st.sidebar.title("Label Setup")
 
 # 1. Data Fields
 with st.sidebar.expander("Data Fields", expanded=True):
@@ -1099,17 +1156,27 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
                 column_label_overrides.pop(column, None)
         st.session_state["column_label_overrides"] = column_label_overrides
 
+with st.sidebar:
     st.divider()
-    template_json = json.dumps(
-        build_template_payload(label_width_mm=label_width, label_height_mm=label_height),
-        indent=2,
-    ).encode("utf-8")
-    st.download_button(
-        "Save template",
-        data=template_json,
-        file_name="plantid_label_template.json",
-        mime="application/json",
-    )
+    with st.container(border=True):
+        st.caption("Save your current label design settings as a reusable layout file")
+        template_json = json.dumps(
+            build_template_payload(label_width_mm=label_width, label_height_mm=label_height),
+            indent=2,
+        ).encode("utf-8")
+        st.download_button(
+            "Save Custom Layout",
+            data=template_json,
+            file_name="plantid_label_template.json",
+            mime="application/json",
+        )
+    st.divider()
+    if st.button("↩ Restart — return to Start page", use_container_width=True):
+        st.session_state.df = None
+        st.session_state.data_source = None
+        st.session_state.start_selected_source = None
+        st.session_state.start_layout_source = None
+        st.rerun()
 
 if rename_columns_enabled:
     column_label_map = {
@@ -1120,21 +1187,12 @@ else:
     column_label_map = {column: column for column in active_df.columns.tolist()}
 
 with summary_container:
-    st.subheader("1. Dataset Summary")
-    c1, c2, c3 = st.columns(3)
+    st.subheader("1. Dataset Summary & Live Preview")
+    c1, c2, c3 = st.columns([1, 1, 6], gap="small")
     c1.metric("Original Rows", len(st.session_state.df))
     c2.metric("Filtered Rows", len(filtered_df))
     c3.metric("Data Source", st.session_state.data_source)
 
-    with st.expander("Dataframe controls"):
-        st.warning("This will clear the current dataframe and return you to the start page.")
-        if st.button("Clear dataframe and restart"):
-            st.session_state.df = None
-            st.session_state.data_source = None
-            st.rerun()
-
-with preview_container:
-    st.subheader("2. Live Preview")
     if not filtered_df.empty:
         buffer = io.BytesIO()
         c_prev = canvas.Canvas(buffer, pagesize=(label_width * mm, label_height * mm))
@@ -1163,7 +1221,7 @@ with preview_container:
         st.info("No rows match the filter for preview.")
 
 with export_container:
-    st.subheader("4. Export Labels / PDF")
+    st.subheader("3. Export Labels / PDF")
 
     page_format = st.selectbox("Page size / printer", ["A4", "Letter", "LabelPrinter"], index=2)
 
