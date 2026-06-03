@@ -29,6 +29,12 @@ if "start_layout_source" not in st.session_state:
     st.session_state.start_layout_source = None
 if "layout_uploader_key" not in st.session_state:
     st.session_state.layout_uploader_key = 0
+if "start_screen" not in st.session_state:
+    st.session_state.start_screen = 1
+if "uploaded_csv_bytes" not in st.session_state:
+    st.session_state.uploaded_csv_bytes = None
+if "uploaded_csv_name" not in st.session_state:
+    st.session_state.uploaded_csv_name = None
 
 APP_NAME = "PlantID Label Designer"
 APP_VERSION = "1.3.1"
@@ -711,125 +717,148 @@ st.title(APP_NAME)
 # Start page
 # ======================
 if st.session_state.df is None:
-    st.write(
-        "PlantID Label Designer is a Streamlit web application for generating customizable plant sample labels "
-        "from a CSV file. Labels can be optionally designed with QR and Barcodes and exported in various sizes "
-        "for label or paper printing."
-    )
-    st.caption(
-        "Source code and documentation: [github.com/danforthcenter/PlantID](https://github.com/danforthcenter/PlantID) "
-        "— can be run locally if downloaded."
-    )
-
-    # ---- Step 1: CSV ----
-    st.subheader("Step 1: Select a Plant Label CSV")
-    uploaded_file = st.file_uploader("Browse files", type=["csv"], label_visibility="visible")
-
     example_csv_path = os.path.join(os.path.dirname(__file__), "PV1_metadata.csv")
-    csv_btn_col, csv_dl_col, _csv_spacer = st.columns([1, 1, 6], gap="small")
-    with csv_btn_col:
-        if st.button("Use example CSV", key="use_default_csv_btn", use_container_width=True):
-            st.session_state.start_selected_source = "Example dataset"
-    with csv_dl_col:
-        if os.path.exists(example_csv_path):
-            with open(example_csv_path, "rb") as _f:
-                st.download_button(
-                    "Download example CSV",
-                    data=_f.read(),
-                    file_name="PV1_metadata.csv",
-                    mime="text/csv",
-                    key="download_example_csv_btn",
-                    use_container_width=True,
-                )
 
-    if uploaded_file is not None:
-        st.session_state.start_selected_source = "Uploaded CSV"
-    elif st.session_state.start_selected_source == "Uploaded CSV":
-        st.session_state.start_selected_source = None
+    if st.session_state.start_screen == 1:
+        st.write(
+            "PlantID Label Designer generates customizable plant sample labels from a spreadsheet file. "
+            "Each row in your spreadsheet becomes a label, choose which columns appear as text, and "
+            "optionally encode any field as a QR code or barcode. "
+            "Labels can be sized for standard label stock or sheet paper, then exported as a PDF."
+        )
 
-    if st.session_state.start_selected_source == "Uploaded CSV" and uploaded_file is not None:
-        st.success(f"Loaded data: Uploaded CSV ({uploaded_file.name})")
-    elif st.session_state.start_selected_source == "Example dataset":
-        st.success("Loaded data: Example file (PV1_metadata.csv)")
+        # ---- Step 1: CSV ----
+        st.subheader("Step 1: Select a Plant Label CSV")
+        st.caption(
+            "Your CSV should have one row per plant/sample and any number of columns — "
+            "for example: PlantID, Genotype, Treatment, PlantNumber. "
+            "There are no required column names."
+        )
+        uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"], label_visibility="visible")
+        st.caption(
+            "Use **example CSV** to try the tool with a sample phenotyping dataset, or upload your own. "
+            "Download the example CSV first if you want a ready-made template to adapt for your own experiment."
+        )
 
-    # ---- Step 2: Layout ----
-    st.subheader("Step 2: Select a Plant Label Design")
-    st.caption(
-        "Upload a previously saved layout JSON, or use the example layout to get started. "
-        "Label design settings (size, fonts, QR codes, etc.) can be fully customized on the next page."
-    )
-
-    template_file = st.file_uploader(
-        "Upload a layout JSON file",
-        type=["json"],
-        key=f"start_template_file_{st.session_state.layout_uploader_key}",
-    )
-    if template_file is not None:
-        _, template_error = load_template_payload(template_file)
-        if template_error:
-            st.error(template_error)
-        else:
-            st.session_state.start_layout_source = "Uploaded layout"
-            st.success(f"Loaded layout: {template_file.name}")
-    elif st.session_state.start_layout_source == "Uploaded layout":
-        st.session_state.start_layout_source = None
-
-    if st.button("Use Example Layout JSON", key="use_example_layout_btn"):
-        example_layout_path = os.path.join(os.path.dirname(__file__), "example_layout.json")
-        if os.path.exists(example_layout_path):
-            with open(example_layout_path, "r") as _lf:
-                _layout = json.load(_lf)
-            _settings = _layout.get("settings", _layout)
-            for _key, _default in TEMPLATE_DEFAULTS.items():
-                st.session_state[_key] = _settings.get(_key, _default)
-            st.session_state["loaded_template_metadata"] = {
-                "filename": "example_layout.json",
-                "app_name": _layout.get("app", APP_NAME),
-                "app_version": _layout.get("app_version", APP_VERSION),
-                "template_version": _layout.get("template_version", TEMPLATE_VERSION),
-            }
-        st.session_state.start_layout_source = "Example layout"
-        st.session_state.layout_uploader_key += 1
-        st.rerun()
-
-    if st.session_state.start_layout_source == "Example layout":
-        st.success("Using example layout (default settings)")
-
-    # ---- Step 3: Go ----
-    st.subheader("Step 3: Go")
-
-    if st.button("Go", key="start_go_btn"):
-        if st.session_state.start_selected_source is None:
-            st.error("Select a CSV upload or click 'Use example CSV' before clicking Go.")
-        elif st.session_state.start_layout_source is None:
-            st.error("Select a label design: upload a JSON layout file or click 'Use Example Layout JSON'.")
-        elif st.session_state.start_selected_source == "Example dataset":
+        csv_btn_col, csv_dl_col, _csv_spacer = st.columns([1, 1, 6], gap="small")
+        with csv_btn_col:
+            if st.button("Use example CSV", key="use_default_csv_btn", width="stretch"):
+                st.session_state.start_selected_source = "Example dataset"
+        with csv_dl_col:
             if os.path.exists(example_csv_path):
-                st.session_state.df = pd.read_csv(example_csv_path)
+                with open(example_csv_path, "rb") as _f:
+                    st.download_button(
+                        "Download example CSV",
+                        data=_f.read(),
+                        file_name="PV1_metadata.csv",
+                        mime="text/csv",
+                        key="download_example_csv_btn",
+                        width="stretch",
+                    )
+
+        if uploaded_file is not None:
+            st.session_state.start_selected_source = "Uploaded CSV"
+        elif st.session_state.start_selected_source == "Uploaded CSV":
+            st.session_state.start_selected_source = None
+
+        if st.session_state.start_selected_source == "Uploaded CSV" and uploaded_file is not None:
+            st.success(f"Loaded data: Uploaded CSV ({uploaded_file.name})")
+        elif st.session_state.start_selected_source == "Example dataset":
+            st.success("Loaded data: Example file (PV1_metadata.csv)")
+
+        csv_ready = st.session_state.start_selected_source is not None
+        if st.button("Next →", key="start_next_btn", disabled=not csv_ready):
+            if st.session_state.start_selected_source == "Uploaded CSV" and uploaded_file is not None:
+                st.session_state.uploaded_csv_bytes = uploaded_file.read()
+                st.session_state.uploaded_csv_name = uploaded_file.name
+                st.session_state.start_screen = 2
+                st.rerun()
+            elif st.session_state.start_selected_source == "Example dataset":
+                st.session_state.start_screen = 2
+                st.rerun()
+
+    elif st.session_state.start_screen == 2:
+        # ---- Step 2: Layout ----
+        st.subheader("Step 2: Select a Plant Label Design")
+        st.caption(
+            "The layout defines how your labels look — "
+            "physical size, which columns appear, font, spacing, and whether to include a QR code or barcode. "
+            "All settings can be freely adjusted on the designer page after opening. "
+            "Save your layout as a JSON file at any time and reload it here to reuse it across experiments."
+        )
+
+        template_file = st.file_uploader(
+            "Upload a layout JSON file",
+            type=["json"],
+            key=f"start_template_file_{st.session_state.layout_uploader_key}",
+        )
+        if template_file is not None:
+            _, template_error = load_template_payload(template_file)
+            if template_error:
+                st.error(template_error)
             else:
-                st.session_state.df = pd.DataFrame({
-                    "ID": ["P001", "P002", "P003", "P004"],
-                    "Species": ["Arabidopsis", "Arabidopsis", "Wheat", "Maize"],
-                    "Genotype": ["Col-0", "Ler", "Bobwhite", "B73"],
-                    "Treatment": ["Control", "Salt", "Control", "Drought"]
-                })
-            st.session_state.data_source = "Example dataset"
-            st.session_state.scroll_to_top = True
+                st.session_state.start_layout_source = "Uploaded layout"
+                st.success(f"Loaded layout: {template_file.name}")
+        elif st.session_state.start_layout_source == "Uploaded layout":
+            st.session_state.start_layout_source = None
+
+        if st.button("Use Example Layout JSON", key="use_example_layout_btn"):
+            example_layout_path = os.path.join(os.path.dirname(__file__), "example_layout.json")
+            if os.path.exists(example_layout_path):
+                with open(example_layout_path, "r") as _lf:
+                    _layout = json.load(_lf)
+                _settings = _layout.get("settings", _layout)
+                for _key, _default in TEMPLATE_DEFAULTS.items():
+                    st.session_state[_key] = _settings.get(_key, _default)
+                st.session_state["loaded_template_metadata"] = {
+                    "filename": "example_layout.json",
+                    "app_name": _layout.get("app", APP_NAME),
+                    "app_version": _layout.get("app_version", APP_VERSION),
+                    "template_version": _layout.get("template_version", TEMPLATE_VERSION),
+                }
+            st.session_state.start_layout_source = "Example layout"
+            st.session_state.layout_uploader_key += 1
             st.rerun()
-        elif st.session_state.start_selected_source == "Uploaded CSV" and uploaded_file is not None:
-            st.session_state.df = pd.read_csv(uploaded_file)
-            st.session_state.data_source = "Uploaded CSV"
-            st.session_state.scroll_to_top = True
-            st.rerun()
-        else:
-            st.error("Select a CSV upload or click 'Use example CSV' before clicking Go.")
+
+        if st.session_state.start_layout_source == "Example layout":
+            st.success("Using example layout (default settings)")
+
+        layout_ready = st.session_state.start_layout_source is not None
+        _nav_back_col, _nav_go_col, _nav_spacer = st.columns([1, 2, 5], gap="small")
+        with _nav_back_col:
+            if st.button("← Back", key="start_back_btn", width="stretch"):
+                st.session_state.start_screen = 1
+                st.session_state.start_layout_source = None
+                st.rerun()
+        with _nav_go_col:
+            if st.button("Open Label Designer →", key="start_go_btn", disabled=not layout_ready, width="stretch"):
+                if st.session_state.start_selected_source == "Example dataset":
+                    if os.path.exists(example_csv_path):
+                        st.session_state.df = pd.read_csv(example_csv_path)
+                    else:
+                        st.session_state.df = pd.DataFrame({
+                            "ID": ["P001", "P002", "P003", "P004"],
+                            "Species": ["Arabidopsis", "Arabidopsis", "Wheat", "Maize"],
+                            "Genotype": ["Col-0", "Ler", "Bobwhite", "B73"],
+                            "Treatment": ["Control", "Salt", "Control", "Drought"]
+                        })
+                    st.session_state.data_source = "Example dataset"
+                    st.session_state.scroll_to_top = True
+                    st.rerun()
+                elif st.session_state.start_selected_source == "Uploaded CSV" and st.session_state.uploaded_csv_bytes is not None:
+                    st.session_state.df = pd.read_csv(io.BytesIO(st.session_state.uploaded_csv_bytes))
+                    st.session_state.data_source = "Uploaded CSV"
+                    st.session_state.scroll_to_top = True
+                    st.rerun()
+                else:
+                    st.error("Something went wrong. Please restart and try again.")
 
     render_version_footer()
     st.stop()
 
 if st.session_state.get("scroll_to_top"):
     st.session_state.scroll_to_top = False
-    st.components.v1.html("""
+    st.iframe("""
         <script>
             (function() {
                 function scrollToTop() {
@@ -841,7 +870,7 @@ if st.session_state.get("scroll_to_top"):
                 setTimeout(scrollToTop, 100);
             })();
         </script>
-    """, height=0)
+    """, height=1)
 
 # ==========================================
 # Section order containers
@@ -878,6 +907,10 @@ if "code_column_select" not in st.session_state or st.session_state.get("code_co
 
 with filter_container:
     st.subheader("2. Filter & Select Rows")
+    st.caption(
+        "Use the Filter tool and checkboxes to control which records to include in the exported PDF. "
+        "By default all records will be printed."
+    )
     st.write("Check the **Print** box for rows you want to include in the PDF:")
 
     table_col, controls_col = st.columns([4, 1])
@@ -906,7 +939,7 @@ with filter_container:
             df_for_selection,
             column_config={"Print": st.column_config.CheckboxColumn("Print", default=True)},
             disabled=active_df.columns.tolist(),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             key="editor"
         )
@@ -920,6 +953,9 @@ with filter_container:
 
 # 1. Data Fields
 with st.sidebar.expander("Data Fields", expanded=True):
+    st.caption(
+        "Choose which data fields appear on the label and how they are formatted."
+    )
     visible_column_options = active_df.columns.tolist()
     _code_col = st.session_state.get("code_column_select", default_code_column)
     visible_column_defaults = [col for col in visible_column_options if col != _code_col] or visible_column_options
@@ -932,6 +968,7 @@ with st.sidebar.expander("Data Fields", expanded=True):
         "Columns to display",
         visible_column_options,
         key="visible_columns_multiselect",
+        help="Select which CSV columns to print on each label. The order here controls the order text appears on the label.",
     )
 
     split_column_enabled = st.checkbox(
@@ -977,6 +1014,7 @@ with st.sidebar.expander("Data Fields", expanded=True):
         min_value=1,
         max_value=max(1, len(filtered_df)),
         value=1,
+        help="Choose which record from your dataset to show in the live label preview.",
     ) - 1
 
     if split_column_enabled and generated_split_columns and not filtered_df.empty:
@@ -1001,6 +1039,9 @@ with st.sidebar.expander("Data Fields", expanded=True):
 
 # 2. Label Size
 with st.sidebar.expander("Label Size", expanded=False):
+    st.caption(
+        "Select a preset to match a common label format, or choose **Custom** to set an exact width and height."
+    )
     UNIT_MM = "Metric (mm)"
     UNIT_INCH_FRACTIONAL = "Imperial (inches)"
     UNIT_INCH_DECIMAL = "Imperial (inch decimal)"
@@ -1044,7 +1085,8 @@ with st.sidebar.expander("Label Size", expanded=False):
 
     preset_options = ["Custom"] + [format_preset_label(n, w, h, units) for n, w, h, _, _ in LABEL_PRESETS]
     ensure_choice("preset_select", preset_options, TEMPLATE_DEFAULTS["preset_select"])
-    preset = st.selectbox("Preset", preset_options, key="preset_select")
+    preset = st.selectbox("Preset", preset_options, key="preset_select",
+        help="Common label sizes for standard stock. Choose Custom to set your own exact width and height.")
 
     if preset == "Custom":
         if units == UNIT_MM:
@@ -1064,22 +1106,26 @@ with st.sidebar.expander("Label Size", expanded=False):
 
 # 3. Code Settings
 with st.sidebar.expander("Code Settings", expanded=False):
+    st.caption(
+        "Add a machine-readable code to each label. Typically the Plant/Sample ID."
+    )
     code_type_options = ["QR", "Barcode", "None"]
     ensure_choice("code_type_select", code_type_options, TEMPLATE_DEFAULTS["code_type_select"])
-    code_type = st.selectbox("Code type", code_type_options, key="code_type_select")
+    code_type = st.selectbox("Code type", code_type_options, key="code_type_select",
+        help="QR codes can be scanned by any smartphone camera. Barcodes (Code 128) suit handheld scanners and take less vertical space. Choose None to use the full label area for text.")
 
     if code_type != "None":
         code_column_options = active_df.columns.tolist()
         ensure_choice("code_column_select", code_column_options, default_code_column)
-        code_column = st.selectbox("Code column", code_column_options, key="code_column_select")
+        code_column = st.selectbox("Code column", code_column_options, key="code_column_select",
+            help="Which CSV column value is encoded into the QR code or barcode — typically the sample or plant ID.")
 
         code_position_options = ["Left", "Right"]
         ensure_choice("code_position_select", code_position_options, TEMPLATE_DEFAULTS["code_position_select"])
         code_position = st.selectbox(
             "Code position",
             code_position_options,
-            key="code_position_select",
-            help="Place the QR or barcode on the left or right side of the label.",
+            key="code_position_select"
         )
     else:
         code_column = None
@@ -1088,33 +1134,43 @@ with st.sidebar.expander("Code Settings", expanded=False):
     if code_type == "QR":
         qr_max = max(8, int(label_height - 2))
         ensure_int_range("qr_size_slider", min(18, qr_max), 8, qr_max)
-        qr_size = st.slider("QR size (mm)", 8, qr_max, key="qr_size_slider")
+        qr_size = st.slider("QR size (mm)", 8, qr_max, key="qr_size_slider",
+            help="Side length of the QR code square. Larger codes are easier to scan from a distance but take more label space.")
         barcode_width = barcode_height = 0
     elif code_type == "Barcode":
         max_barcode_width = max(15, int(label_width - 5))
         max_barcode_height = max(5, int(label_height - 5))
         ensure_int_range("barcode_width_slider", TEMPLATE_DEFAULTS["barcode_width_slider"], 15, max_barcode_width)
         ensure_int_range("barcode_height_slider", TEMPLATE_DEFAULTS["barcode_height_slider"], 5, max_barcode_height)
-        barcode_width = st.slider("Barcode width (mm)", 15, max_barcode_width, key="barcode_width_slider")
-        barcode_height = st.slider("Barcode height (mm)", 5, max_barcode_height, key="barcode_height_slider")
+        barcode_width = st.slider("Barcode width (mm)", 15, max_barcode_width, key="barcode_width_slider",
+            help="Horizontal length of the barcode. Wider barcodes are more reliably scanned.")
+        barcode_height = st.slider("Barcode height (mm)", 5, max_barcode_height, key="barcode_height_slider",
+            help="Vertical height of the barcode bars.")
         qr_size = 0
     else:
         qr_size = barcode_width = barcode_height = 0
 
     max_qr_left_offset = int(label_width / 2)
     ensure_int_range("qr_left_offset_slider", TEMPLATE_DEFAULTS["qr_left_offset_slider"], 0, max_qr_left_offset)
-    qr_left_offset = st.slider("Code offset from edge (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider")
+    qr_left_offset = st.slider("Code offset from edge (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider",
+        help="Nudge the code inward from the label edge — useful if the code is being clipped by the label border or printer margin.")
 
 # 4. Design & Aesthetics
 with st.sidebar.expander("Design & Aesthetics", expanded=False):
+    st.caption(
+        "Fine-tune the visual appearance of each label."
+    )
     ensure_bool("show_border_check", TEMPLATE_DEFAULTS["show_border_check"])
-    show_border = st.checkbox("Show label border", key="show_border_check")
+    show_border = st.checkbox("Show label border", key="show_border_check",
+        help="Draw a thin border around the edge of each label. Useful for cutting guidance on sheet printouts.")
 
     ensure_bool("show_column_names_check", TEMPLATE_DEFAULTS["show_column_names_check"])
-    show_column_names = st.checkbox("Show column names", key="show_column_names_check")
+    show_column_names = st.checkbox("Show column names", key="show_column_names_check",
+        help="Print the CSV column name alongside each value on the label, e.g. 'Genotype: Col-0'.")
 
     ensure_float_range("row_height_factor_slider", TEMPLATE_DEFAULTS["row_height_factor_slider"], 0.1, 1.5)
-    row_height_factor = st.slider("Row height factor", 0.1, 1.5, key="row_height_factor_slider")
+    row_height_factor = st.slider("Row height factor", 0.1, 1.5, key="row_height_factor_slider",
+        help="Controls line spacing between text rows. Lower values pack more lines in; higher values give more breathing room.")
 
     ensure_int_range("label_padding_slider", TEMPLATE_DEFAULTS["label_padding_slider"], 0, 15)
     label_padding = st.slider(
@@ -1133,7 +1189,8 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 
     max_text_left_offset = int(label_width / 2)
     ensure_int_range("text_left_offset_slider", TEMPLATE_DEFAULTS["text_left_offset_slider"], 0, max_text_left_offset)
-    text_left_offset = st.slider("Text left offset (mm)", 0, max_text_left_offset, key="text_left_offset_slider")
+    text_left_offset = st.slider("Text left offset (mm)", 0, max_text_left_offset, key="text_left_offset_slider",
+        help="Shift the text block inward from the left edge. Useful when the code is on the left and overlaps the text.")
 
     label_font_options = ["Helvetica", "Times-Roman", "Courier"]
     ensure_choice("label_font_select", label_font_options, TEMPLATE_DEFAULTS["label_font_select"])
@@ -1144,7 +1201,8 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 
     highlight_options = ["None"] + active_df.columns.tolist()
     ensure_choice("highlight_column_select", highlight_options, TEMPLATE_DEFAULTS["highlight_column_select"])
-    highlight_column = st.selectbox("Highlight column", highlight_options, key="highlight_column_select")
+    highlight_column = st.selectbox("Highlight column", highlight_options, key="highlight_column_select",
+        help="Colour the label background based on a column's value — useful for visually grouping treatments, genotypes, or experiment blocks.")
     highlight_column = None if highlight_column == "None" else highlight_column
 
     if highlight_column:
@@ -1159,8 +1217,10 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 
         ensure_int_range("highlight_padding_slider", TEMPLATE_DEFAULTS["highlight_padding_slider"], 0, 20)
         ensure_bool("side_highlight_check", TEMPLATE_DEFAULTS["side_highlight_check"])
-        highlight_padding = st.slider("Highlight padding", 0, 20, key="highlight_padding_slider")
-        side_highlight = st.checkbox("Side strip highlight", key="side_highlight_check")
+        highlight_padding = st.slider("Highlight padding", 0, 20, key="highlight_padding_slider",
+            help="Extra space around the highlighted text area within the coloured background.")
+        side_highlight = st.checkbox("Side strip highlight", key="side_highlight_check",
+            help="Add a solid coloured vertical bar down one edge of the label as an alternative or complement to the full background highlight.")
     else:
         highlight_color = colors.black
         highlight_padding = 0
@@ -1168,7 +1228,8 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 
     if side_highlight:
         ensure_float_range("sidebar_factor_slider", TEMPLATE_DEFAULTS["sidebar_factor_slider"], 0.05, 0.5)
-        sidebar_factor = st.slider("Sidebar width factor", 0.05, 0.5, key="sidebar_factor_slider")
+        sidebar_factor = st.slider("Sidebar width factor", 0.05, 0.5, key="sidebar_factor_slider",
+            help="Width of the coloured side strip as a fraction of the total label width, e.g. 0.1 = 10%.")
     else:
         sidebar_factor = 0
 
@@ -1197,7 +1258,9 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 with st.sidebar:
     st.divider()
     with st.container(border=True):
-        st.caption("Save your current label design settings as a reusable layout file")
+        st.caption(
+            "Save your current label design settings as a reusable layout file that can be loaded on on the start screen (Step 2). "
+        )
         template_json = json.dumps(
             build_template_payload(label_width_mm=label_width, label_height_mm=label_height),
             indent=2,
@@ -1209,11 +1272,14 @@ with st.sidebar:
             mime="application/json",
         )
     st.divider()
-    if st.button("↩ Restart — return to Start page", use_container_width=True):
+    if st.button("↩ Restart — return to Start page", width="stretch"):
         st.session_state.df = None
         st.session_state.data_source = None
         st.session_state.start_selected_source = None
         st.session_state.start_layout_source = None
+        st.session_state.start_screen = 1
+        st.session_state.uploaded_csv_bytes = None
+        st.session_state.uploaded_csv_name = None
         st.rerun()
 
 if rename_columns_enabled:
@@ -1226,6 +1292,10 @@ else:
 
 with summary_container:
     st.subheader("1. Dataset Summary & Live Preview")
+    st.caption(
+        "The preview updates live as you change settings in the sidebar. "
+        "Use **Preview row** in the Data Fields panel to check how different records look before exporting."
+    )
     c1, c2, c3 = st.columns([1, 1, 6], gap="small")
     c1.metric("Original Rows", len(st.session_state.df))
     c2.metric("Filtered Rows", len(filtered_df))
@@ -1254,14 +1324,24 @@ with summary_container:
         )
         c_prev.save()
         buffer.seek(0)
-        st.image(pdfium.PdfDocument(buffer)[0].render(scale=3).to_pil(), caption=f"Previewing Row {row_index + 1}")
+        _pil_img = pdfium.PdfDocument(buffer)[0].render(scale=3).to_pil()
+        _img_bytes = io.BytesIO()
+        _pil_img.save(_img_bytes, format="PNG")
+        st.image(_img_bytes.getvalue(), caption=f"Previewing Row {row_index + 1}")
     else:
         st.info("No rows match the filter for preview.")
 
 with export_container:
     st.subheader("3. Export Labels / PDF")
+    st.caption(
+        "Choose a page format then click **Generate Multi-Label PDF** to build the export. "
+        "**A4** and **Letter** tile labels in a grid on each sheet — useful for pre-cut label stock. "
+        "**LabelPrinter** outputs one label per page at the exact size set in Label Size, "
+        "for direct-to-label roll printers (e.g. Dymo, Zebra, Brother)."
+    )
 
-    page_format = st.selectbox("Page size / printer", ["A4", "Letter", "LabelPrinter"], index=2)
+    page_format = st.selectbox("Page size / printer", ["A4", "Letter", "LabelPrinter"], index=2,
+        help="A4/Letter: tiles labels in a grid across a full sheet. LabelPrinter: one label per page at the exact Label Size, for roll printers (Dymo, Zebra, Brother).")
 
     page_margin = 5
     label_gap = 2
