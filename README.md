@@ -29,3 +29,12 @@ Run the app locally:
 streamlit run streamlit_app.py
 ```
 Upload a CSV with your plant metadata. Configure label settings. Download the PDF for printing.
+
+## Versioning
+
+| Version | Current |
+|---|---|
+| App | 0.9 |
+| Layout template schema | 0 |
+
+The **app version** reflects the overall release of PlantID Label Designer. The **layout template schema version** is an independent version integer that tracks the structure of saved layout `.json` files. It only increments when a breaking change is made to the layout format (e.g. fields renamed or restructured). When loading a saved layout, the app will warn if the schema versions do not match.

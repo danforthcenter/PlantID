@@ -37,8 +37,8 @@ if "uploaded_csv_name" not in st.session_state:
     st.session_state.uploaded_csv_name = None
 
 APP_NAME = "PlantID Label Designer"
-APP_VERSION = "1.3.1"
-TEMPLATE_VERSION = 3
+APP_VERSION = "0.9"
+TEMPLATE_VERSION = 0
 
 HIGHLIGHT_COLOR_OPTIONS = ["Black", "White"]
 HIGHLIGHT_COLOR_MAP = {
