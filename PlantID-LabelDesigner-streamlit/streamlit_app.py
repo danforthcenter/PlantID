@@ -77,6 +77,7 @@ TEMPLATE_DEFAULTS = {
     "col_name_width_ratio_slider": 35,
 }
 PREFERRED_SPLIT_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID"]
+PREFERRED_CODE_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID", "Barcode"]
 
 
 def build_template_payload(label_width_mm=None, label_height_mm=None):
@@ -270,6 +271,22 @@ def detect_default_split_column(columns):
 
     lowered = {column.lower(): column for column in columns}
     for candidate in PREFERRED_SPLIT_COLUMNS:
+        if candidate.lower() in lowered:
+            return lowered[candidate.lower()]
+
+    return columns[0]
+
+
+def detect_default_code_column(columns):
+    if not columns:
+        return None
+
+    for candidate in PREFERRED_CODE_COLUMNS:
+        if candidate in columns:
+            return candidate
+
+    lowered = {column.lower(): column for column in columns}
+    for candidate in PREFERRED_CODE_COLUMNS:
         if candidate.lower() in lowered:
             return lowered[candidate.lower()]
 
@@ -797,16 +814,34 @@ if st.session_state.df is None:
                     "Treatment": ["Control", "Salt", "Control", "Drought"]
                 })
             st.session_state.data_source = "Example dataset"
+            st.session_state.scroll_to_top = True
             st.rerun()
         elif st.session_state.start_selected_source == "Uploaded CSV" and uploaded_file is not None:
             st.session_state.df = pd.read_csv(uploaded_file)
             st.session_state.data_source = "Uploaded CSV"
+            st.session_state.scroll_to_top = True
             st.rerun()
         else:
             st.error("Select a CSV upload or click 'Use example CSV' before clicking Go.")
 
     render_version_footer()
     st.stop()
+
+if st.session_state.get("scroll_to_top"):
+    st.session_state.scroll_to_top = False
+    st.components.v1.html("""
+        <script>
+            (function() {
+                function scrollToTop() {
+                    var main = window.parent.document.querySelector('section[data-testid="stMain"]');
+                    if (main) main.scrollTop = 0;
+                    window.parent.scrollTo(0, 0);
+                }
+                scrollToTop();
+                setTimeout(scrollToTop, 100);
+            })();
+        </script>
+    """, height=0)
 
 # ==========================================
 # Section order containers
@@ -834,6 +869,12 @@ active_df, generated_split_columns, generated_secondary_split_columns = build_sp
     st.session_state.get("split_secondary_enabled_check", False),
     st.session_state.get("split_secondary_delimiter_input", "-"),
 )
+
+# Resolve code column before sidebar sections so visible column defaults can use it
+_all_active_columns = active_df.columns.tolist()
+default_code_column = detect_default_code_column(_all_active_columns)
+if "code_column_select" not in st.session_state or st.session_state.get("code_column_select") not in _all_active_columns:
+    st.session_state["code_column_select"] = default_code_column
 
 with filter_container:
     st.subheader("2. Filter & Select Rows")
@@ -880,11 +921,8 @@ with filter_container:
 # 1. Data Fields
 with st.sidebar.expander("Data Fields", expanded=True):
     visible_column_options = active_df.columns.tolist()
-    visible_column_defaults = (
-        visible_column_options[:2]
-        if len(visible_column_options) > 1
-        else visible_column_options
-    )
+    _code_col = st.session_state.get("code_column_select", default_code_column)
+    visible_column_defaults = [col for col in visible_column_options if col != _code_col] or visible_column_options
     ensure_multiselect_choices(
         "visible_columns_multiselect",
         visible_column_options,
@@ -1032,7 +1070,7 @@ with st.sidebar.expander("Code Settings", expanded=False):
 
     if code_type != "None":
         code_column_options = active_df.columns.tolist()
-        ensure_choice("code_column_select", code_column_options, code_column_options[0])
+        ensure_choice("code_column_select", code_column_options, default_code_column)
         code_column = st.selectbox("Code column", code_column_options, key="code_column_select")
 
         code_position_options = ["Left", "Right"]
