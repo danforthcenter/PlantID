@@ -5,6 +5,8 @@ import os
 import json
 import pypdfium2 as pdfium
 
+from fractions import Fraction
+
 from reportlab.lib.pagesizes import mm, A4
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
@@ -265,6 +267,137 @@ def ensure_multiselect_choices(key, options, default):
     ]
     if not st.session_state[key]:
         st.session_state[key] = default
+
+
+INCH_SLIDER_MIN = 0.25
+INCH_SLIDER_MAX = 8.0
+
+
+def format_fractional_inches(value_in, max_denominator=16):
+    whole = int(value_in)
+    frac = Fraction(value_in - whole).limit_denominator(max_denominator)
+    if frac == 1:
+        whole += 1
+        frac = Fraction(0)
+    if frac.numerator == 0:
+        return str(whole)
+    if whole == 0:
+        return f"{frac.numerator}/{frac.denominator}"
+    return f"{whole} {frac.numerator}/{frac.denominator}"
+
+
+def format_inches_text(value_in):
+    value_in = float(value_in)
+    frac = Fraction(value_in).limit_denominator(64)
+    if abs(float(frac) - value_in) < 1e-6:
+        return format_fractional_inches(value_in, max_denominator=64)
+    return f"{value_in:g}"
+
+
+def parse_inches_text(text):
+    if text is None:
+        return None
+    text = str(text).strip()
+    if not text:
+        return None
+    try:
+        parts = text.split()
+        if len(parts) == 2 and "/" in parts[1]:
+            numerator, denominator = parts[1].split("/")
+            return float(parts[0]) + float(numerator) / float(denominator)
+        if len(parts) == 1 and "/" in text:
+            numerator, denominator = text.split("/")
+            return float(numerator) / float(denominator)
+        if len(parts) == 1:
+            return float(text)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return None
+
+
+# Keep each slider + exact-value pair on one row in the sidebar: Streamlit
+# columns enforce a minimum width and wrap to a second row in the
+# default-width sidebar, so pin the input column to a compact fixed width
+# (wide enough to keep the number input's +/- step buttons) and let the
+# slider shrink to fill the remaining space.
+_SIZE_ROW_CSS = """
+<style>
+section[data-testid="stSidebar"] [class*="st-key-sizerow_"] [data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+    gap: 0.5rem !important;
+}
+section[data-testid="stSidebar"] [class*="st-key-sizerow_"] [data-testid="stColumn"] {
+    min-width: 0 !important;
+    width: auto !important;
+    flex: 1 1 auto !important;
+}
+section[data-testid="stSidebar"] [class*="st-key-sizerow_"] [data-testid="stColumn"]:last-child {
+    min-width: 8rem !important;
+    width: 8rem !important;
+    flex: 0 0 8rem !important;
+}
+</style>
+"""
+
+
+def _size_row_columns(key):
+    with st.container(key=f"sizerow_{key}"):
+        return st.columns([3, 2], gap="small")
+
+
+def _sync_widget_value(canonical_key, widget_key):
+    st.session_state[canonical_key] = st.session_state[widget_key]
+
+
+def _sync_inches_input(canonical_key, widget_key, min_value, max_value):
+    parsed = parse_inches_text(st.session_state[widget_key])
+    if parsed is not None and parsed > 0:
+        st.session_state[canonical_key] = round(max(min_value, min(max_value, parsed)), 4)
+
+
+def slider_with_input(label, slider_min, slider_max, key, step=1,
+                      input_min=None, input_max=None, help=None, format=None):
+    """A slider plus an exact-value box sharing one session-state value.
+
+    The box accepts values beyond the slider range (bounded only by
+    input_min/input_max); the slider then pins to its nearest end.
+    """
+    slider_key = f"{key}__slider"
+    input_key = f"{key}__input"
+    value = st.session_state[key]
+    st.session_state[slider_key] = max(slider_min, min(slider_max, value))
+    st.session_state[input_key] = value
+    slider_col, input_col = _size_row_columns(key)
+    with slider_col:
+        st.slider(label, slider_min, slider_max, step=step, key=slider_key,
+                  help=help, on_change=_sync_widget_value, args=(key, slider_key))
+    with input_col:
+        st.number_input(f"{label} exact value", min_value=input_min, max_value=input_max,
+                        step=step, key=input_key, label_visibility="hidden", format=format,
+                        help="Type an exact value — it can go beyond the slider range.",
+                        on_change=_sync_widget_value, args=(key, input_key))
+    return st.session_state[key]
+
+
+def fraction_slider_with_input(label, key, input_min=0.05, input_max=40.0, help=None):
+    """Fractional-inch slider (1/16 in steps) plus a box accepting fractions or decimals."""
+    options = [i / 16 for i in range(int(INCH_SLIDER_MIN * 16), int(INCH_SLIDER_MAX * 16) + 1)]
+    slider_key = f"{key}__slider"
+    input_key = f"{key}__input"
+    value = float(st.session_state[key])
+    st.session_state[slider_key] = min(options, key=lambda opt: abs(opt - value))
+    st.session_state[input_key] = format_inches_text(value)
+    slider_col, input_col = _size_row_columns(key)
+    with slider_col:
+        st.select_slider(label, options=options, key=slider_key,
+                         format_func=format_fractional_inches, help=help,
+                         on_change=_sync_widget_value, args=(key, slider_key))
+    with input_col:
+        st.text_input(f"{label} exact value", key=input_key, label_visibility="hidden",
+                      help='Type a fraction like "2 3/4" or "5/8", or a decimal like "2.75" — '
+                           "it can go beyond the slider range.",
+                      on_change=_sync_inches_input, args=(key, input_key, input_min, input_max))
+    return float(st.session_state[key])
 
 
 def detect_default_split_column(columns):
@@ -950,6 +1083,7 @@ with filter_container:
         st.warning("No rows selected for printing. Please filter or check boxes above.")
 
 # ---- Sidebar ----
+st.html(_SIZE_ROW_CSS)
 
 # 1. Data Fields
 with st.sidebar.expander("Data Fields", expanded=True):
@@ -1065,16 +1199,6 @@ with st.sidebar.expander("Label Size", expanded=False):
         ("Square Label", 51, 51, 51, 51),
     ]
 
-    def format_fractional_inches(value_in):
-        from fractions import Fraction
-        whole = int(value_in)
-        frac = Fraction(value_in - whole).limit_denominator(16)
-        if frac.numerator == 0:
-            return str(whole)
-        if whole == 0:
-            return f"{frac.numerator}/{frac.denominator}"
-        return f"{whole} {frac.numerator}/{frac.denominator}"
-
     def format_preset_label(name, display_w_mm, display_h_mm, units_mode):
         if units_mode == UNIT_MM:
             return f"{name} ({display_w_mm} × {display_h_mm} mm)"
@@ -1090,16 +1214,25 @@ with st.sidebar.expander("Label Size", expanded=False):
 
     if preset == "Custom":
         if units == UNIT_MM:
-            ensure_int_range("label_width_mm_slider", TEMPLATE_DEFAULTS["label_width_mm_slider"], 10, 200)
-            ensure_int_range("label_height_mm_slider", TEMPLATE_DEFAULTS["label_height_mm_slider"], 10, 200)
-            label_width = st.slider("Width (mm)", 10, 200, step=1, key="label_width_mm_slider")
-            label_height = st.slider("Height (mm)", 10, 200, step=1, key="label_height_mm_slider")
+            ensure_int_range("label_width_mm_slider", TEMPLATE_DEFAULTS["label_width_mm_slider"], 1, 1000)
+            ensure_int_range("label_height_mm_slider", TEMPLATE_DEFAULTS["label_height_mm_slider"], 1, 1000)
+            label_width = slider_with_input("Width (mm)", 10, 200, "label_width_mm_slider",
+                                            step=1, input_min=1, input_max=1000)
+            label_height = slider_with_input("Height (mm)", 10, 200, "label_height_mm_slider",
+                                             step=1, input_min=1, input_max=1000)
+        elif units == UNIT_INCH_FRACTIONAL:
+            ensure_float_range("label_width_in_slider", TEMPLATE_DEFAULTS["label_width_in_slider"], 0.05, 40.0)
+            ensure_float_range("label_height_in_slider", TEMPLATE_DEFAULTS["label_height_in_slider"], 0.05, 40.0)
+            label_width_in = fraction_slider_with_input("Width (in)", "label_width_in_slider")
+            label_height_in = fraction_slider_with_input("Height (in)", "label_height_in_slider")
+            label_width, label_height = label_width_in * 25.4, label_height_in * 25.4
         else:
-            step_in = 1 / 16 if units == UNIT_INCH_FRACTIONAL else 0.01
-            ensure_float_range("label_width_in_slider", TEMPLATE_DEFAULTS["label_width_in_slider"], 0.4, 7.9)
-            ensure_float_range("label_height_in_slider", TEMPLATE_DEFAULTS["label_height_in_slider"], 0.4, 7.9)
-            label_width_in = st.slider("Width (in)", 0.4, 7.9, step=step_in, key="label_width_in_slider")
-            label_height_in = st.slider("Height (in)", 0.4, 7.9, step=step_in, key="label_height_in_slider")
+            ensure_float_range("label_width_in_slider", TEMPLATE_DEFAULTS["label_width_in_slider"], 0.05, 40.0)
+            ensure_float_range("label_height_in_slider", TEMPLATE_DEFAULTS["label_height_in_slider"], 0.05, 40.0)
+            label_width_in = slider_with_input("Width (in)", 0.4, 7.9, "label_width_in_slider",
+                                               step=0.01, input_min=0.05, input_max=40.0, format="%.3f")
+            label_height_in = slider_with_input("Height (in)", 0.4, 7.9, "label_height_in_slider",
+                                                step=0.01, input_min=0.05, input_max=40.0, format="%.3f")
             label_width, label_height = label_width_in * 25.4, label_height_in * 25.4
     else:
         label_width, label_height = LABEL_PRESETS[preset_options.index(preset) - 1][3:5]
@@ -1132,25 +1265,28 @@ with st.sidebar.expander("Code Settings", expanded=False):
         code_position = "Left"
 
     if code_type == "QR":
-        qr_max = max(8, int(label_height - 2))
-        ensure_int_range("qr_size_slider", min(18, qr_max), 8, qr_max)
-        qr_size = st.slider("QR size (mm)", 8, qr_max, key="qr_size_slider",
+        qr_max = max(9, int(label_height - 2))
+        ensure_int_range("qr_size_slider", min(18, qr_max), 1, 500)
+        qr_size = slider_with_input("QR size (mm)", 8, qr_max, "qr_size_slider",
+            step=1, input_min=1, input_max=500,
             help="Side length of the QR code square. Larger codes are easier to scan from a distance but take more label space.")
         barcode_width = barcode_height = 0
     elif code_type == "Barcode":
-        max_barcode_width = max(15, int(label_width - 5))
-        max_barcode_height = max(5, int(label_height - 5))
-        ensure_int_range("barcode_width_slider", TEMPLATE_DEFAULTS["barcode_width_slider"], 15, max_barcode_width)
-        ensure_int_range("barcode_height_slider", TEMPLATE_DEFAULTS["barcode_height_slider"], 5, max_barcode_height)
-        barcode_width = st.slider("Barcode width (mm)", 15, max_barcode_width, key="barcode_width_slider",
+        max_barcode_width = max(16, int(label_width - 5))
+        max_barcode_height = max(6, int(label_height - 5))
+        ensure_int_range("barcode_width_slider", TEMPLATE_DEFAULTS["barcode_width_slider"], 1, 500)
+        ensure_int_range("barcode_height_slider", TEMPLATE_DEFAULTS["barcode_height_slider"], 1, 500)
+        barcode_width = slider_with_input("Barcode width (mm)", 15, max_barcode_width, "barcode_width_slider",
+            step=1, input_min=1, input_max=500,
             help="Horizontal length of the barcode. Wider barcodes are more reliably scanned.")
-        barcode_height = st.slider("Barcode height (mm)", 5, max_barcode_height, key="barcode_height_slider",
+        barcode_height = slider_with_input("Barcode height (mm)", 5, max_barcode_height, "barcode_height_slider",
+            step=1, input_min=1, input_max=500,
             help="Vertical height of the barcode bars.")
         qr_size = 0
     else:
         qr_size = barcode_width = barcode_height = 0
 
-    max_qr_left_offset = int(label_width / 2)
+    max_qr_left_offset = max(1, int(label_width / 2))
     ensure_int_range("qr_left_offset_slider", TEMPLATE_DEFAULTS["qr_left_offset_slider"], 0, max_qr_left_offset)
     qr_left_offset = st.slider("Code offset from edge (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider",
         help="Nudge the code inward from the label edge — useful if the code is being clipped by the label border or printer margin.")
@@ -1187,7 +1323,7 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
     else:
         col_name_width_ratio = TEMPLATE_DEFAULTS["col_name_width_ratio_slider"] / 100.0
 
-    max_text_left_offset = int(label_width / 2)
+    max_text_left_offset = max(1, int(label_width / 2))
     ensure_int_range("text_left_offset_slider", TEMPLATE_DEFAULTS["text_left_offset_slider"], 0, max_text_left_offset)
     text_left_offset = st.slider("Text left offset (mm)", 0, max_text_left_offset, key="text_left_offset_slider",
         help="Shift the text block inward from the left edge. Useful when the code is on the left and overlaps the text.")
@@ -1196,8 +1332,9 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
     ensure_choice("label_font_select", label_font_options, TEMPLATE_DEFAULTS["label_font_select"])
     label_font = st.selectbox("Label font", label_font_options, key="label_font_select")
 
-    ensure_int_range("label_font_size_slider", TEMPLATE_DEFAULTS["label_font_size_slider"], 4, 20)
-    label_font_size = st.slider("Label font size (pt)", 4, 20, key="label_font_size_slider")
+    ensure_int_range("label_font_size_slider", TEMPLATE_DEFAULTS["label_font_size_slider"], 1, 200)
+    label_font_size = slider_with_input("Label font size (pt)", 4, 48, "label_font_size_slider",
+        step=1, input_min=1, input_max=200)
 
     highlight_options = ["None"] + active_df.columns.tolist()
     ensure_choice("highlight_column_select", highlight_options, TEMPLATE_DEFAULTS["highlight_column_select"])
