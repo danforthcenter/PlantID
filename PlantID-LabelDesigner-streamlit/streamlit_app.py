@@ -51,6 +51,22 @@ APP_NAME = "PlantID Label Designer"
 APP_VERSION = "0.9"
 TEMPLATE_VERSION = 0
 
+PRINTER_TYPE_SHEET = "Sheet printer"
+PRINTER_TYPE_LABEL = "Label printer"
+PRINTER_TYPE_OPTIONS = [PRINTER_TYPE_SHEET, PRINTER_TYPE_LABEL]
+SHEET_SETUP_PRESET = "Sheet stock preset"
+SHEET_SETUP_CUSTOM = "Custom Sheet spacing"
+SHEET_SETUP_OPTIONS = [SHEET_SETUP_PRESET, SHEET_SETUP_CUSTOM]
+SHEET_PAGE_FORMAT_OPTIONS = ["A4", "A4 Landscape", "Letter", "Letter Landscape"]
+LABEL_PRINTER_PAGE_FORMAT = "LabelPrinter"
+LABEL_SIZE_CUSTOM = "Custom Size"
+LABEL_SIZE_PRESET = "Preset size"
+LABEL_SIZE_MODE_OPTIONS = [LABEL_SIZE_CUSTOM, LABEL_SIZE_PRESET]
+FILTER_MATCH_ALL = "Match all filters"
+FILTER_MATCH_ANY = "Match any filter"
+FILTER_MATCH_OPTIONS = [FILTER_MATCH_ALL, FILTER_MATCH_ANY]
+FILTER_OPERATOR_OPTIONS = ["Contains", "Does not contain", "Equals", "Is blank", "Is not blank"]
+
 HIGHLIGHT_COLOR_OPTIONS = ["Black", "White"]
 HIGHLIGHT_COLOR_MAP = {
     "Black": colors.black,
@@ -66,6 +82,7 @@ TEMPLATE_DEFAULTS = {
     "visible_columns_multiselect": [],
     "rename_columns_check": False,
     "column_label_overrides": {},
+    "label_size_mode_select": LABEL_SIZE_CUSTOM,
     "units_select": "Metric (mm)",
     "preset_select": "Custom",
     "label_width_mm_slider": 70,
@@ -92,14 +109,23 @@ TEMPLATE_DEFAULTS = {
     "show_border_check": True,
     "label_padding_slider": 4,
     "col_name_width_ratio_slider": 35,
+    "printer_type_select": PRINTER_TYPE_LABEL,
+    "sheet_setup_select": SHEET_SETUP_CUSTOM,
     "sheet_preset_select": "Custom sheet spacing",
-    "page_format_select": "LabelPrinter",
+    "page_format_select": LABEL_PRINTER_PAGE_FORMAT,
     "page_margin_top_mm_input": 5.0,
     "page_margin_right_mm_input": 5.0,
     "page_margin_bottom_mm_input": 5.0,
     "page_margin_left_mm_input": 5.0,
     "label_gap_horizontal_mm_input": 2.0,
     "label_gap_vertical_mm_input": 2.0,
+    "row_range_enabled_check": False,
+    "row_range_start_input": 1,
+    "row_range_end_input": 1,
+    "filter_enabled_check": False,
+    "filter_count_input": 1,
+    "filter_match_mode_select": FILTER_MATCH_ALL,
+    "sheet_start_slot_input": 1,
 }
 PREFERRED_SPLIT_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID"]
 PREFERRED_CODE_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID", "Barcode"]
@@ -151,6 +177,28 @@ def load_template_payload(uploaded_file):
 
     for key, value in applied.items():
         st.session_state[key] = value
+
+    sheet_preset_name = st.session_state.get("sheet_preset_select")
+    page_format_name = st.session_state.get("page_format_select")
+    if "printer_type_select" not in applied:
+        st.session_state["printer_type_select"] = (
+            PRINTER_TYPE_SHEET
+            if sheet_preset_name in SHEET_STOCK_PRESET_BY_NAME
+            or page_format_name in SHEET_PAGE_FORMAT_OPTIONS
+            else PRINTER_TYPE_LABEL
+        )
+    if "sheet_setup_select" not in applied:
+        st.session_state["sheet_setup_select"] = (
+            SHEET_SETUP_PRESET
+            if sheet_preset_name in SHEET_STOCK_PRESET_BY_NAME
+            else SHEET_SETUP_CUSTOM
+        )
+    if "label_size_mode_select" not in applied:
+        st.session_state["label_size_mode_select"] = (
+            LABEL_SIZE_CUSTOM
+            if st.session_state.get("preset_select") == "Custom"
+            else LABEL_SIZE_PRESET
+        )
 
     st.session_state["loaded_template_metadata"] = {
         "filename": getattr(uploaded_file, "name", "template.json"),
@@ -285,6 +333,38 @@ def ensure_multiselect_choices(key, options, default):
         st.session_state[key] = default
 
 
+def normalize_export_state():
+    sheet_preset_name = st.session_state.get("sheet_preset_select")
+    page_format_name = st.session_state.get("page_format_select")
+
+    if "printer_type_select" not in st.session_state:
+        st.session_state["printer_type_select"] = (
+            PRINTER_TYPE_SHEET
+            if sheet_preset_name in SHEET_STOCK_PRESET_BY_NAME
+            or page_format_name in SHEET_PAGE_FORMAT_OPTIONS
+            else PRINTER_TYPE_LABEL
+        )
+    ensure_choice("printer_type_select", PRINTER_TYPE_OPTIONS, PRINTER_TYPE_LABEL)
+
+    if "sheet_setup_select" not in st.session_state:
+        st.session_state["sheet_setup_select"] = (
+            SHEET_SETUP_PRESET
+            if sheet_preset_name in SHEET_STOCK_PRESET_BY_NAME
+            else SHEET_SETUP_CUSTOM
+        )
+    ensure_choice("sheet_setup_select", SHEET_SETUP_OPTIONS, SHEET_SETUP_CUSTOM)
+
+    if st.session_state["printer_type_select"] == PRINTER_TYPE_LABEL:
+        st.session_state["page_format_select"] = LABEL_PRINTER_PAGE_FORMAT
+        return
+
+    if st.session_state["sheet_setup_select"] == SHEET_SETUP_PRESET:
+        sheet_preset_options = [preset["name"] for preset in SHEET_STOCK_PRESETS]
+        ensure_choice("sheet_preset_select", sheet_preset_options, sheet_preset_options[0])
+    elif page_format_name == LABEL_PRINTER_PAGE_FORMAT:
+        st.session_state["page_format_select"] = "Letter"
+
+
 INCH_SLIDER_MIN = 0.25
 INCH_SLIDER_MAX = 8.0
 
@@ -342,6 +422,7 @@ def parse_inches_text(text):
 
 def apply_label_size_to_state(width_mm, height_mm, preset_option=None):
     st.session_state["preset_select"] = preset_option or "Custom"
+    st.session_state["label_size_mode_select"] = LABEL_SIZE_PRESET if preset_option else LABEL_SIZE_CUSTOM
     st.session_state["label_width_mm_slider"] = round(width_mm, 2)
     st.session_state["label_height_mm_slider"] = round(height_mm, 2)
     st.session_state["label_width_in_slider"] = round(width_mm / 25.4, 4)
@@ -385,18 +466,38 @@ def sync_sheet_preset_from_label_preset(preset_lookup):
     selected_preset = st.session_state.get("preset_select")
     dimensions = preset_lookup.get(selected_preset)
     if not dimensions:
-        st.session_state["sheet_preset_select"] = CUSTOM_SHEET_PRESET
+        st.session_state["printer_type_select"] = PRINTER_TYPE_LABEL
+        st.session_state["page_format_select"] = LABEL_PRINTER_PAGE_FORMAT
         return
 
     width_mm, height_mm, preferred_sheet_name = dimensions
+    st.session_state["label_width_mm_slider"] = round(width_mm, 2)
+    st.session_state["label_height_mm_slider"] = round(height_mm, 2)
+    st.session_state["label_width_in_slider"] = round(width_mm / 25.4, 4)
+    st.session_state["label_height_in_slider"] = round(height_mm / 25.4, 4)
+
     matching_sheet = find_sheet_preset_for_label_size(
         width_mm,
         height_mm,
         preferred_sheet_name=preferred_sheet_name,
     )
-    st.session_state["sheet_preset_select"] = (
-        matching_sheet["name"] if matching_sheet else CUSTOM_SHEET_PRESET
-    )
+    if matching_sheet:
+        st.session_state["printer_type_select"] = PRINTER_TYPE_SHEET
+        st.session_state["sheet_setup_select"] = SHEET_SETUP_PRESET
+        st.session_state["sheet_preset_select"] = matching_sheet["name"]
+        st.session_state["page_format_select"] = matching_sheet["page_format"]
+    else:
+        st.session_state["printer_type_select"] = PRINTER_TYPE_LABEL
+        st.session_state["page_format_select"] = LABEL_PRINTER_PAGE_FORMAT
+
+
+def sync_label_size_mode():
+    if st.session_state.get("label_size_mode_select") != LABEL_SIZE_CUSTOM:
+        return
+
+    st.session_state["preset_select"] = "Custom"
+    st.session_state["printer_type_select"] = PRINTER_TYPE_LABEL
+    st.session_state["page_format_select"] = LABEL_PRINTER_PAGE_FORMAT
 
 
 def apply_sheet_preset_to_state(preset):
@@ -684,6 +785,56 @@ def build_split_dataframe(
     return result[ordered_columns], primary_columns, secondary_columns
 
 
+def filter_mask_for_rule(df, column, operator, query):
+    if df.empty:
+        return pd.Series(False, index=df.index)
+
+    if column == "All Columns":
+        values = df.astype(str)
+        blank_values = df.isna() | df.astype(str).apply(lambda col: col.str.strip().eq(""))
+    else:
+        values = df[[column]].astype(str)
+        blank_values = df[[column]].isna() | df[[column]].astype(str).apply(lambda col: col.str.strip().eq(""))
+
+    if operator == "Is blank":
+        return blank_values.any(axis=1)
+    if operator == "Is not blank":
+        return ~blank_values.any(axis=1)
+
+    query = "" if query is None else str(query)
+    if not query:
+        return pd.Series(True, index=df.index)
+
+    if operator == "Equals":
+        return values.apply(lambda col: col.str.casefold().eq(query.casefold())).any(axis=1)
+    if operator == "Does not contain":
+        return ~values.apply(lambda col: col.str.contains(query, case=False, na=False, regex=False)).any(axis=1)
+    return values.apply(lambda col: col.str.contains(query, case=False, na=False, regex=False)).any(axis=1)
+
+
+def apply_filter_rules(df, rules, match_mode):
+    active_rules = [
+        rule for rule in rules
+        if rule["operator"] in ("Is blank", "Is not blank") or rule["query"]
+    ]
+    if not active_rules:
+        return df.copy()
+
+    masks = [
+        filter_mask_for_rule(df, rule["column"], rule["operator"], rule["query"])
+        for rule in active_rules
+    ]
+    if match_mode == FILTER_MATCH_ANY:
+        combined_mask = masks[0].copy()
+        for mask in masks[1:]:
+            combined_mask = combined_mask | mask
+    else:
+        combined_mask = masks[0].copy()
+        for mask in masks[1:]:
+            combined_mask = combined_mask & mask
+    return df[combined_mask].copy()
+
+
 # ======================================================
 # Draw a single label directly onto a ReportLab canvas
 # ======================================================
@@ -926,6 +1077,7 @@ def generate_sheet_direct(
     label_gap_horizontal=None,
     label_gap_vertical=None,
     repeat_count=1,
+    sheet_start_slot=1,
 ):
     if page_margin_top is None:
         page_margin_top = page_margin
@@ -968,6 +1120,26 @@ def generate_sheet_direct(
 
     x = margin_left
     y = page_height - label_height * mm - margin_top
+    if page_format in SHEET_PAGE_FORMAT_OPTIONS:
+        capacity_columns, capacity_rows = sheet_capacity(
+            page_width / mm,
+            page_height / mm,
+            label_width,
+            label_height,
+            page_margin_left,
+            page_margin_right,
+            page_margin_top,
+            page_margin_bottom,
+            label_gap_horizontal,
+            label_gap_vertical,
+        )
+        labels_per_sheet = capacity_columns * capacity_rows
+        if labels_per_sheet:
+            start_slot_index = max(0, min(int(sheet_start_slot or 1), labels_per_sheet) - 1)
+            start_column = start_slot_index % capacity_columns
+            start_row = start_slot_index // capacity_columns
+            x = margin_left + start_column * (label_width * mm + gap_horizontal)
+            y = page_height - label_height * mm - margin_top - start_row * (label_height * mm + gap_vertical)
 
     for _, row in df.iterrows():
         for _ in range(repeat_count):
@@ -1214,43 +1386,137 @@ if "code_column_select" not in st.session_state or st.session_state.get("code_co
 with filter_container:
     st.subheader("2. Filter & Select Rows")
     st.caption(
-        "Use the Filter tool and checkboxes to control which records to include in the exported PDF. "
-        "By default all records will be printed."
+        "Use row ranges, filters, and the Print checkboxes to control which records are included in the exported PDF."
     )
-    st.write("Check the **Print** box for rows you want to include in the PDF:")
 
     table_col, controls_col = st.columns([4, 1])
     with controls_col:
-        filter_column_options = ["All Columns"] + active_df.columns.tolist()
-        ensure_choice("filter_column_select", filter_column_options, "All Columns")
-        filter_col = st.selectbox("Filter in column", filter_column_options, key="filter_column_select")
-        search_query = st.text_input("Search rows", placeholder="Type to filter...")
+        total_rows = len(active_df)
+        ensure_bool("row_range_enabled_check", TEMPLATE_DEFAULTS["row_range_enabled_check"])
+        row_range_enabled = st.checkbox(
+            "Limit by row range",
+            key="row_range_enabled_check",
+            help="Use 1-based row numbers from the current dataset, for example 20 to 100.",
+        )
+        if row_range_enabled:
+            if (
+                st.session_state.get("row_range_start_input", 1) == 1
+                and st.session_state.get("row_range_end_input", 1) == 1
+                and total_rows > 1
+            ):
+                st.session_state["row_range_end_input"] = total_rows
+            ensure_int_range("row_range_start_input", 1, 1, max(1, total_rows))
+            ensure_int_range("row_range_end_input", max(1, total_rows), 1, max(1, total_rows))
+            if st.session_state["row_range_end_input"] < st.session_state["row_range_start_input"]:
+                st.session_state["row_range_end_input"] = st.session_state["row_range_start_input"]
 
-    if search_query:
-        if filter_col == "All Columns":
-            mask = active_df.astype(str).apply(
-                lambda x: x.str.contains(search_query, case=False, na=False)
-            ).any(axis=1)
+            row_start_col, row_end_col = st.columns(2)
+            with row_start_col:
+                row_range_start = st.number_input(
+                    "Start row",
+                    min_value=1,
+                    max_value=max(1, total_rows),
+                    step=1,
+                    key="row_range_start_input",
+                )
+            with row_end_col:
+                row_range_end = st.number_input(
+                    "End row",
+                    min_value=1,
+                    max_value=max(1, total_rows),
+                    step=1,
+                    key="row_range_end_input",
+                )
+            if row_range_end < row_range_start:
+                st.warning("End row must be greater than or equal to start row.")
         else:
-            mask = active_df[filter_col].astype(str).str.contains(search_query, case=False, na=False)
-        filtered_df = active_df[mask].copy()
+            row_range_start = 1
+            row_range_end = total_rows
+
+        filter_rules = []
+        filter_match_mode = TEMPLATE_DEFAULTS["filter_match_mode_select"]
+        ensure_bool("filter_enabled_check", TEMPLATE_DEFAULTS["filter_enabled_check"])
+        filter_enabled = st.checkbox(
+            "Add a filter",
+            key="filter_enabled_check",
+            help="Filter rows by one or more columns before using the manual Print checkboxes.",
+        )
+
+        if filter_enabled:
+            filter_column_options = ["All Columns"] + active_df.columns.tolist()
+            ensure_int_range("filter_count_input", TEMPLATE_DEFAULTS["filter_count_input"], 1, 5)
+            filter_count = st.number_input(
+                "Number of filters",
+                min_value=1,
+                max_value=5,
+                step=1,
+                key="filter_count_input",
+            )
+            if filter_count > 1:
+                ensure_choice("filter_match_mode_select", FILTER_MATCH_OPTIONS, TEMPLATE_DEFAULTS["filter_match_mode_select"])
+                filter_match_mode = st.selectbox(
+                    "Combine filters",
+                    FILTER_MATCH_OPTIONS,
+                    key="filter_match_mode_select",
+                )
+
+            for filter_index in range(int(filter_count)):
+                suffix = filter_index + 1
+                column_key = f"filter_{suffix}_column_select"
+                operator_key = f"filter_{suffix}_operator_select"
+                query_key = f"filter_{suffix}_query_input"
+
+                ensure_choice(column_key, filter_column_options, "All Columns")
+                ensure_choice(operator_key, FILTER_OPERATOR_OPTIONS, "Contains")
+                st.caption(f"Filter {suffix}")
+                filter_column = st.selectbox(
+                    f"Filter {suffix} column",
+                    filter_column_options,
+                    key=column_key,
+                )
+                filter_operator = st.selectbox(
+                    f"Filter {suffix} operator",
+                    FILTER_OPERATOR_OPTIONS,
+                    key=operator_key,
+                )
+                filter_query = ""
+                if filter_operator not in ("Is blank", "Is not blank"):
+                    filter_query = st.text_input(
+                        f"Filter {suffix} text",
+                        placeholder="Type to filter...",
+                        key=query_key,
+                    )
+                filter_rules.append(
+                    {
+                        "column": filter_column,
+                        "operator": filter_operator,
+                        "query": filter_query,
+                    }
+                )
+
+    if row_range_enabled and row_range_end < row_range_start:
+        filtered_df = active_df.iloc[0:0].copy()
     else:
-        filtered_df = active_df.copy()
+        row_limited_df = active_df.iloc[row_range_start - 1:row_range_end].copy()
+        filtered_df = apply_filter_rules(row_limited_df, filter_rules, filter_match_mode)
 
     df_for_selection = filtered_df.copy()
+    df_for_selection.insert(0, "Row", [active_df.index.get_loc(idx) + 1 for idx in df_for_selection.index])
     df_for_selection.insert(0, "Print", True)
 
     with table_col:
+        st.caption(f"{len(filtered_df)} of {len(active_df)} rows shown before manual selection.")
+        st.write("Check the **Print** box for rows you want to include in the PDF:")
         edited_df = st.data_editor(
             df_for_selection,
             column_config={"Print": st.column_config.CheckboxColumn("Print", default=True)},
-            disabled=active_df.columns.tolist(),
+            disabled=["Row"] + active_df.columns.tolist(),
             width="stretch",
             hide_index=True,
             key="editor"
         )
 
-    df_to_use = edited_df[edited_df["Print"] == True].drop(columns=["Print"])
+    df_to_use = edited_df[edited_df["Print"] == True].drop(columns=["Print", "Row"])
 
     if df_to_use.empty:
         st.warning("No rows selected for printing. Please filter or check boxes above.")
@@ -1258,8 +1524,14 @@ with filter_container:
 # ---- Sidebar ----
 st.html(_SIZE_ROW_CSS)
 
+normalize_export_state()
 active_sheet_preset_name = st.session_state.get("sheet_preset_select")
 active_sheet_preset = SHEET_STOCK_PRESET_BY_NAME.get(active_sheet_preset_name)
+if (
+    st.session_state.get("printer_type_select") != PRINTER_TYPE_SHEET
+    or st.session_state.get("sheet_setup_select") != SHEET_SETUP_PRESET
+):
+    active_sheet_preset = None
 if active_sheet_preset:
     apply_sheet_preset_to_state(active_sheet_preset)
 
@@ -1352,20 +1624,39 @@ with st.sidebar.expander("Data Fields", expanded=True):
 # 2. Label Size
 with st.sidebar.expander("Label Size", expanded=False):
     st.caption(
-        "Select a preset to match a common label format, or choose **Custom** to set an exact width and height."
+        "Choose a preset label size or set an exact custom width and height."
     )
     if active_sheet_preset:
         st.caption(
             f"Using {active_sheet_preset['name']} from Export Labels / PDF, so the exact label size is set from that sheet stock."
         )
-    unit_options = [UNIT_MM, UNIT_INCH_FRACTIONAL, UNIT_INCH_DECIMAL]
-    ensure_choice("units_select", unit_options, TEMPLATE_DEFAULTS["units_select"])
-    units = st.selectbox("Units", unit_options, key="units_select")
 
+    if (
+        "label_size_mode_select" not in st.session_state
+        and st.session_state.get("preset_select") != "Custom"
+    ):
+        st.session_state["label_size_mode_select"] = LABEL_SIZE_PRESET
+    ensure_choice(
+        "label_size_mode_select",
+        LABEL_SIZE_MODE_OPTIONS,
+        TEMPLATE_DEFAULTS["label_size_mode_select"],
+    )
+    label_size_mode = st.radio(
+        "Size source",
+        LABEL_SIZE_MODE_OPTIONS,
+        index=LABEL_SIZE_MODE_OPTIONS.index(st.session_state["label_size_mode_select"]),
+        horizontal=True,
+        key="label_size_mode_select",
+        help="Use Custom Size for exact dimensions, or Preset size for common label formats.",
+        on_change=sync_label_size_mode,
+    )
+
+    units = st.session_state.get("units_select", TEMPLATE_DEFAULTS["units_select"])
     preset_options = ["Custom"] + [
         format_label_preset_option(preset_item[0], preset_item[1], preset_item[2], units)
         for preset_item in LABEL_PRESETS
     ]
+    preset_size_options = preset_options[1:]
     preset_dimension_lookup = {
         format_label_preset_option(item[0], item[1], item[2], units): (
             item[3],
@@ -1374,17 +1665,20 @@ with st.sidebar.expander("Label Size", expanded=False):
         )
         for item in LABEL_PRESETS
     }
-    ensure_choice("preset_select", preset_options, TEMPLATE_DEFAULTS["preset_select"])
-    preset = st.selectbox(
-        "Preset",
-        preset_options,
-        key="preset_select",
-        help="Common label sizes for standard stock. Choose Custom to set your own exact width and height.",
-        on_change=sync_sheet_preset_from_label_preset,
-        args=(preset_dimension_lookup,),
-    )
 
-    if preset == "Custom":
+    if label_size_mode == LABEL_SIZE_CUSTOM:
+        previous_preset = st.session_state.get("preset_select")
+        if previous_preset in preset_dimension_lookup:
+            seed_width_mm, seed_height_mm = preset_dimension_lookup[previous_preset][:2]
+            st.session_state["label_width_mm_slider"] = round(seed_width_mm, 2)
+            st.session_state["label_height_mm_slider"] = round(seed_height_mm, 2)
+            st.session_state["label_width_in_slider"] = round(seed_width_mm / 25.4, 4)
+            st.session_state["label_height_in_slider"] = round(seed_height_mm / 25.4, 4)
+        st.session_state["preset_select"] = "Custom"
+        unit_options = [UNIT_MM, UNIT_INCH_FRACTIONAL, UNIT_INCH_DECIMAL]
+        ensure_choice("units_select", unit_options, TEMPLATE_DEFAULTS["units_select"])
+        units = st.selectbox("Units", unit_options, key="units_select")
+
         if units == UNIT_MM:
             ensure_float_range("label_width_mm_slider", TEMPLATE_DEFAULTS["label_width_mm_slider"], 1.0, 1000.0)
             ensure_float_range("label_height_mm_slider", TEMPLATE_DEFAULTS["label_height_mm_slider"], 1.0, 1000.0)
@@ -1407,7 +1701,16 @@ with st.sidebar.expander("Label Size", expanded=False):
                                                 step=0.01, input_min=0.05, input_max=40.0, format="%.3f")
             label_width, label_height = label_width_in * 25.4, label_height_in * 25.4
     else:
-        label_width, label_height = LABEL_PRESETS[preset_options.index(preset) - 1][3:5]
+        ensure_choice("preset_select", preset_size_options, preset_size_options[0])
+        preset = st.selectbox(
+            "Preset size",
+            preset_size_options,
+            key="preset_select",
+            help="Common label sizes for standard stock.",
+            on_change=sync_sheet_preset_from_label_preset,
+            args=(preset_dimension_lookup,),
+        )
+        label_width, label_height = preset_dimension_lookup[preset][:2]
 
 if active_sheet_preset:
     label_width = active_sheet_preset["label_width_mm"]
@@ -1645,50 +1948,78 @@ with summary_container:
         st.info("No rows match the filter for preview.")
 
 with export_container:
-    st.subheader("3. Export Labels / PDF")
+    st.subheader("3. Export Options")
     st.caption(
-        "Choose a page format or sheet-stock preset, then click **Generate Multi-Label PDF** to build the export. "
-        "Sheet presets apply the label size, paper size, margins, and spacing for pre-cut stock. "
-        "**LabelPrinter** outputs one label per page at the exact size set in Label Size, "
-        "for direct-to-label roll printers (e.g. Dymo, Zebra, Brother)."
+        "Choose a sheet printer for full-page label stock, or a label printer for one label per page. "
+        "Then click **Generate Multi-Label PDF** to build the export."
     )
 
-    sheet_preset_options = [CUSTOM_SHEET_PRESET] + [preset["name"] for preset in SHEET_STOCK_PRESETS]
-    ensure_choice("sheet_preset_select", sheet_preset_options, TEMPLATE_DEFAULTS["sheet_preset_select"])
-    sheet_preset_name = st.selectbox(
-        "Sheet stock preset",
-        sheet_preset_options,
-        key="sheet_preset_select",
-        help="Choose a known tag/dot sheet to apply its measured label size, margins, and label spacing.",
+    ensure_choice("printer_type_select", PRINTER_TYPE_OPTIONS, TEMPLATE_DEFAULTS["printer_type_select"])
+    printer_type = st.radio(
+        "Printer type",
+        PRINTER_TYPE_OPTIONS,
+        index=PRINTER_TYPE_OPTIONS.index(st.session_state["printer_type_select"]),
+        horizontal=True,
+        key="printer_type_select",
+        help="Sheet printer tiles labels on A4/Letter stock. Label printer outputs one label per page at the exact Label Size.",
     )
 
-    selected_sheet_preset = SHEET_STOCK_PRESET_BY_NAME.get(sheet_preset_name)
-    if selected_sheet_preset:
-        page_format = selected_sheet_preset["page_format"]
-        page_margin_top = selected_sheet_preset["margin_top_mm"]
-        page_margin_right = selected_sheet_preset["margin_right_mm"]
-        page_margin_bottom = selected_sheet_preset["margin_bottom_mm"]
-        page_margin_left = selected_sheet_preset["margin_left_mm"]
-        label_gap_horizontal = selected_sheet_preset["gap_horizontal_mm"]
-        label_gap_vertical = selected_sheet_preset["gap_vertical_mm"]
+    labels_per_sheet = 0
+    sheet_start_slot = 1
+    page_format = LABEL_PRINTER_PAGE_FORMAT
+    page_margin_top = page_margin_right = page_margin_bottom = page_margin_left = 0.0
+    label_gap_horizontal = label_gap_vertical = 0.0
+
+    if printer_type == PRINTER_TYPE_LABEL:
+        st.session_state["page_format_select"] = LABEL_PRINTER_PAGE_FORMAT
         st.caption(
-            f"{selected_sheet_preset['columns']} × {selected_sheet_preset['rows']} labels per {page_format} sheet; "
-            f"{selected_sheet_preset['label_width_mm']:.2f} × {selected_sheet_preset['label_height_mm']:.2f} mm labels; "
-            f"{label_gap_horizontal:.2f} mm horizontal gap, {label_gap_vertical:.2f} mm vertical gap."
+            "Label printer exports one label per page at the exact size set in Label Size."
         )
     else:
-        page_format_options = ["A4", "A4 Landscape", "Letter", "Letter Landscape", "LabelPrinter"]
-        ensure_choice("page_format_select", page_format_options, TEMPLATE_DEFAULTS["page_format_select"])
-        page_format = st.selectbox(
-            "Page size / printer",
-            page_format_options,
-            key="page_format_select",
-            help="A4/Letter portrait or landscape: tiles labels in a grid across a full sheet. LabelPrinter: one label per page at the exact Label Size, for roll printers (Dymo, Zebra, Brother).",
+        ensure_choice("sheet_setup_select", SHEET_SETUP_OPTIONS, TEMPLATE_DEFAULTS["sheet_setup_select"])
+        sheet_setup = st.radio(
+            "Sheet setup",
+            SHEET_SETUP_OPTIONS,
+            index=SHEET_SETUP_OPTIONS.index(st.session_state["sheet_setup_select"]),
+            horizontal=True,
+            key="sheet_setup_select",
+            help="Use a sheet stock preset for known label templates, or custom sheet spacing for a manual page setup.",
         )
 
-        page_margin_top = page_margin_right = page_margin_bottom = page_margin_left = 0.0
-        label_gap_horizontal = label_gap_vertical = 0.0
-        if page_format in ("A4", "A4 Landscape", "Letter", "Letter Landscape"):
+        if sheet_setup == SHEET_SETUP_PRESET:
+            sheet_preset_options = [preset["name"] for preset in SHEET_STOCK_PRESETS]
+            ensure_choice("sheet_preset_select", sheet_preset_options, sheet_preset_options[0])
+            sheet_preset_name = st.selectbox(
+                "Sheet stock preset",
+                sheet_preset_options,
+                key="sheet_preset_select",
+                help="Choose a known tag/dot sheet to apply its measured label size, margins, and label spacing.",
+            )
+
+            selected_sheet_preset = SHEET_STOCK_PRESET_BY_NAME.get(sheet_preset_name)
+            if selected_sheet_preset:
+                page_format = selected_sheet_preset["page_format"]
+                st.session_state["page_format_select"] = page_format
+                page_margin_top = selected_sheet_preset["margin_top_mm"]
+                page_margin_right = selected_sheet_preset["margin_right_mm"]
+                page_margin_bottom = selected_sheet_preset["margin_bottom_mm"]
+                page_margin_left = selected_sheet_preset["margin_left_mm"]
+                label_gap_horizontal = selected_sheet_preset["gap_horizontal_mm"]
+                label_gap_vertical = selected_sheet_preset["gap_vertical_mm"]
+                st.caption(
+                    f"{selected_sheet_preset['columns']} × {selected_sheet_preset['rows']} labels per {page_format} sheet; "
+                    f"{selected_sheet_preset['label_width_mm']:.2f} × {selected_sheet_preset['label_height_mm']:.2f} mm labels; "
+                    f"{label_gap_horizontal:.2f} mm horizontal gap, {label_gap_vertical:.2f} mm vertical gap."
+                )
+        else:
+            ensure_choice("page_format_select", SHEET_PAGE_FORMAT_OPTIONS, "Letter")
+            page_format = st.selectbox(
+                "Page size",
+                SHEET_PAGE_FORMAT_OPTIONS,
+                key="page_format_select",
+                help="Choose the paper size and orientation for the sheet PDF.",
+            )
+
             for key in (
                 "page_margin_top_mm_input",
                 "page_margin_right_mm_input",
@@ -1759,7 +2090,7 @@ with export_container:
                     help="Space between label rows.",
                 )
 
-    if page_format in ("A4", "A4 Landscape", "Letter", "Letter Landscape"):
+    if page_format in SHEET_PAGE_FORMAT_OPTIONS:
         page_width_mm, page_height_mm = page_size_mm(page_format)
         capacity_columns, capacity_rows = sheet_capacity(
             page_width_mm,
@@ -1779,13 +2110,25 @@ with export_container:
                 f"Current sheet capacity: {capacity_columns} columns × {capacity_rows} rows "
                 f"({labels_per_sheet} labels per sheet)."
             )
+            ensure_int_range("sheet_start_slot_input", TEMPLATE_DEFAULTS["sheet_start_slot_input"], 1, labels_per_sheet)
+            sheet_start_slot = st.number_input(
+                "Start at label position",
+                min_value=1,
+                max_value=labels_per_sheet,
+                step=1,
+                key="sheet_start_slot_input",
+                help="Use the 1-based label position on the first sheet, counted left-to-right then top-to-bottom.",
+            )
+            start_row = (sheet_start_slot - 1) // capacity_columns + 1
+            start_column = (sheet_start_slot - 1) % capacity_columns + 1
+            st.caption(f"First label will print at row {start_row}, column {start_column} on the first sheet.")
         else:
             st.warning("The current label size, margins, and gaps do not leave enough printable space for one label.")
 
     if st.button("Generate Multi-Label PDF"):
         if df_to_use.empty:
             st.error("Cannot generate PDF: No rows selected.")
-        elif page_format in ("A4", "A4 Landscape", "Letter", "Letter Landscape") and labels_per_sheet == 0:
+        elif page_format in SHEET_PAGE_FORMAT_OPTIONS and labels_per_sheet == 0:
             st.error("Cannot generate PDF: the current sheet settings do not fit any labels on the page.")
         else:
             pdf_buffer = generate_sheet_direct(
@@ -1811,6 +2154,7 @@ with export_container:
                 label_gap_horizontal=label_gap_horizontal,
                 label_gap_vertical=label_gap_vertical,
                 repeat_count=repeat_count,
+                sheet_start_slot=sheet_start_slot,
             )
             st.success(
                 f"PDF generated for {len(df_to_use)} unique records "
