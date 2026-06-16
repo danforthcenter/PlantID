@@ -7,7 +7,7 @@ import pypdfium2 as pdfium
 
 from fractions import Fraction
 
-from reportlab.lib.pagesizes import mm, A4
+from reportlab.lib.pagesizes import mm, A4, letter
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.graphics.barcode import qr
@@ -15,6 +15,15 @@ from reportlab.graphics.barcode import code128
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
 from reportlab.pdfbase.pdfmetrics import stringWidth
+from label_presets import (
+    CUSTOM_SHEET_PRESET,
+    LABEL_PRESETS,
+    SHEET_STOCK_PRESET_BY_NAME,
+    SHEET_STOCK_PRESETS,
+    UNIT_INCH_DECIMAL,
+    UNIT_INCH_FRACTIONAL,
+    UNIT_MM,
+)
 
 # ======================================================
 # Session state for dataset
@@ -83,10 +92,17 @@ TEMPLATE_DEFAULTS = {
     "show_border_check": True,
     "label_padding_slider": 4,
     "col_name_width_ratio_slider": 35,
+    "sheet_preset_select": "Custom sheet spacing",
+    "page_format_select": "LabelPrinter",
+    "page_margin_top_mm_input": 5.0,
+    "page_margin_right_mm_input": 5.0,
+    "page_margin_bottom_mm_input": 5.0,
+    "page_margin_left_mm_input": 5.0,
+    "label_gap_horizontal_mm_input": 2.0,
+    "label_gap_vertical_mm_input": 2.0,
 }
 PREFERRED_SPLIT_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID"]
 PREFERRED_CODE_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID", "Barcode"]
-
 
 def build_template_payload(label_width_mm=None, label_height_mm=None):
     settings = {
@@ -97,8 +113,8 @@ def build_template_payload(label_width_mm=None, label_height_mm=None):
         width_mm = float(label_width_mm)
         height_mm = float(label_height_mm)
         settings["preset_select"] = "Custom"
-        settings["label_width_mm_slider"] = int(round(width_mm))
-        settings["label_height_mm_slider"] = int(round(height_mm))
+        settings["label_width_mm_slider"] = round(width_mm, 2)
+        settings["label_height_mm_slider"] = round(height_mm, 2)
         settings["label_width_in_slider"] = round(width_mm / 25.4, 3)
         settings["label_height_in_slider"] = round(height_mm / 25.4, 3)
     return {
@@ -164,8 +180,8 @@ def load_template_payload(uploaded_file):
         try:
             w_in = float(applied["label_width_in_slider"])
             h_in = float(applied["label_height_in_slider"])
-            st.session_state["label_width_mm_slider"] = int(round(w_in * 25.4))
-            st.session_state["label_height_mm_slider"] = int(round(h_in * 25.4))
+            st.session_state["label_width_mm_slider"] = round(w_in * 25.4, 2)
+            st.session_state["label_height_mm_slider"] = round(h_in * 25.4, 2)
             st.session_state["preset_select"] = "Custom"
         except Exception:
             pass
@@ -294,6 +310,15 @@ def format_inches_text(value_in):
     return f"{value_in:g}"
 
 
+def format_label_preset_option(name, display_w_mm, display_h_mm, units_mode):
+    if units_mode == UNIT_MM:
+        return f"{name} ({display_w_mm} × {display_h_mm} mm)"
+    w_in, h_in = display_w_mm / 25.4, display_h_mm / 25.4
+    if units_mode == UNIT_INCH_FRACTIONAL:
+        return f"{name} ({format_fractional_inches(w_in)} × {format_fractional_inches(h_in)} inches)"
+    return f"{name} ({w_in:.3f} × {h_in:.3f} inches)"
+
+
 def parse_inches_text(text):
     if text is None:
         return None
@@ -313,6 +338,131 @@ def parse_inches_text(text):
     except (ValueError, ZeroDivisionError):
         return None
     return None
+
+
+def apply_label_size_to_state(width_mm, height_mm, preset_option=None):
+    st.session_state["preset_select"] = preset_option or "Custom"
+    st.session_state["label_width_mm_slider"] = round(width_mm, 2)
+    st.session_state["label_height_mm_slider"] = round(height_mm, 2)
+    st.session_state["label_width_in_slider"] = round(width_mm / 25.4, 4)
+    st.session_state["label_height_in_slider"] = round(height_mm / 25.4, 4)
+
+
+def find_label_preset_for_label_size(width_mm, height_mm, preferred_sheet_name=None, tolerance=0.01):
+    if preferred_sheet_name:
+        for preset in LABEL_PRESETS:
+            _, _, _, preset_width_mm, preset_height_mm = preset[:5]
+            preset_sheet_name = preset[5] if len(preset) > 5 else None
+            width_matches = abs(preset_width_mm - width_mm) <= tolerance
+            height_matches = abs(preset_height_mm - height_mm) <= tolerance
+            if width_matches and height_matches and preset_sheet_name == preferred_sheet_name:
+                return preset
+
+    for preset in LABEL_PRESETS:
+        _, _, _, preset_width_mm, preset_height_mm = preset[:5]
+        width_matches = abs(preset_width_mm - width_mm) <= tolerance
+        height_matches = abs(preset_height_mm - height_mm) <= tolerance
+        if width_matches and height_matches:
+            return preset
+    return None
+
+
+def find_sheet_preset_for_label_size(width_mm, height_mm, preferred_sheet_name=None, tolerance=0.01):
+    if preferred_sheet_name == CUSTOM_SHEET_PRESET:
+        return None
+    if preferred_sheet_name and preferred_sheet_name in SHEET_STOCK_PRESET_BY_NAME:
+        return SHEET_STOCK_PRESET_BY_NAME[preferred_sheet_name]
+
+    for preset in SHEET_STOCK_PRESETS:
+        width_matches = abs(preset["label_width_mm"] - width_mm) <= tolerance
+        height_matches = abs(preset["label_height_mm"] - height_mm) <= tolerance
+        if width_matches and height_matches:
+            return preset
+    return None
+
+
+def sync_sheet_preset_from_label_preset(preset_lookup):
+    selected_preset = st.session_state.get("preset_select")
+    dimensions = preset_lookup.get(selected_preset)
+    if not dimensions:
+        st.session_state["sheet_preset_select"] = CUSTOM_SHEET_PRESET
+        return
+
+    width_mm, height_mm, preferred_sheet_name = dimensions
+    matching_sheet = find_sheet_preset_for_label_size(
+        width_mm,
+        height_mm,
+        preferred_sheet_name=preferred_sheet_name,
+    )
+    st.session_state["sheet_preset_select"] = (
+        matching_sheet["name"] if matching_sheet else CUSTOM_SHEET_PRESET
+    )
+
+
+def apply_sheet_preset_to_state(preset):
+    matching_label_preset = find_label_preset_for_label_size(
+        preset["label_width_mm"],
+        preset["label_height_mm"],
+        preferred_sheet_name=preset["name"],
+    )
+    preset_option = None
+    if matching_label_preset:
+        name, display_width, display_height, _, _ = matching_label_preset[:5]
+        units = st.session_state.get("units_select", UNIT_MM)
+        preset_option = format_label_preset_option(
+            name,
+            display_width,
+            display_height,
+            units,
+        )
+
+    apply_label_size_to_state(
+        preset["label_width_mm"],
+        preset["label_height_mm"],
+        preset_option=preset_option,
+    )
+    st.session_state["page_format_select"] = preset["page_format"]
+    st.session_state["page_margin_top_mm_input"] = preset["margin_top_mm"]
+    st.session_state["page_margin_right_mm_input"] = preset["margin_right_mm"]
+    st.session_state["page_margin_bottom_mm_input"] = preset["margin_bottom_mm"]
+    st.session_state["page_margin_left_mm_input"] = preset["margin_left_mm"]
+    st.session_state["label_gap_horizontal_mm_input"] = preset["gap_horizontal_mm"]
+    st.session_state["label_gap_vertical_mm_input"] = preset["gap_vertical_mm"]
+
+
+def sheet_capacity(
+    page_width_mm,
+    page_height_mm,
+    label_width_mm,
+    label_height_mm,
+    margin_left_mm,
+    margin_right_mm,
+    margin_top_mm,
+    margin_bottom_mm,
+    gap_horizontal_mm,
+    gap_vertical_mm,
+):
+    usable_width = max(0, page_width_mm - margin_left_mm - margin_right_mm)
+    usable_height = max(0, page_height_mm - margin_top_mm - margin_bottom_mm)
+
+    if label_width_mm <= 0 or label_height_mm <= 0:
+        return 0, 0
+
+    columns = int((usable_width + gap_horizontal_mm + 1e-6) // (label_width_mm + gap_horizontal_mm))
+    rows = int((usable_height + gap_vertical_mm + 1e-6) // (label_height_mm + gap_vertical_mm))
+    return max(0, columns), max(0, rows)
+
+
+def page_size_mm(page_format):
+    if page_format == "A4":
+        return A4[0] / mm, A4[1] / mm
+    if page_format == "A4 Landscape":
+        return A4[1] / mm, A4[0] / mm
+    if page_format == "Letter":
+        return letter[0] / mm, letter[1] / mm
+    if page_format == "Letter Landscape":
+        return letter[1] / mm, letter[0] / mm
+    return None, None
 
 
 # Keep each slider + exact-value pair on one row in the sidebar: Streamlit
@@ -769,32 +919,55 @@ def generate_sheet_direct(
     page_format="LabelPrinter",
     page_margin=5,
     label_gap=2,
+    page_margin_top=None,
+    page_margin_right=None,
+    page_margin_bottom=None,
+    page_margin_left=None,
+    label_gap_horizontal=None,
+    label_gap_vertical=None,
     repeat_count=1,
 ):
+    if page_margin_top is None:
+        page_margin_top = page_margin
+    if page_margin_right is None:
+        page_margin_right = page_margin
+    if page_margin_bottom is None:
+        page_margin_bottom = page_margin
+    if page_margin_left is None:
+        page_margin_left = page_margin
+    if label_gap_horizontal is None:
+        label_gap_horizontal = label_gap
+    if label_gap_vertical is None:
+        label_gap_vertical = label_gap
+
     if page_format == "A4":
         page_width, page_height = A4
-        margin = page_margin * mm
-        gap = label_gap * mm
+    elif page_format == "A4 Landscape":
+        page_height, page_width = A4
     elif page_format == "Letter":
-        from reportlab.lib.pagesizes import letter
         page_width, page_height = letter
-        margin = page_margin * mm
-        gap = label_gap * mm
+    elif page_format == "Letter Landscape":
+        page_height, page_width = letter
     elif page_format == "LabelPrinter":
         page_width = label_width * mm
         page_height = label_height * mm
-        margin = 0
-        gap = 0
+        page_margin_top = page_margin_right = page_margin_bottom = page_margin_left = 0
+        label_gap_horizontal = label_gap_vertical = 0
     else:
         page_width, page_height = A4
-        margin = page_margin * mm
-        gap = label_gap * mm
+
+    margin_top = page_margin_top * mm
+    margin_right = page_margin_right * mm
+    margin_bottom = page_margin_bottom * mm
+    margin_left = page_margin_left * mm
+    gap_horizontal = label_gap_horizontal * mm
+    gap_vertical = label_gap_vertical * mm
 
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=(page_width, page_height))
 
-    x = margin
-    y = page_height - label_height * mm - margin
+    x = margin_left
+    y = page_height - label_height * mm - margin_top
 
     for _, row in df.iterrows():
         for _ in range(repeat_count):
@@ -826,14 +999,14 @@ def generate_sheet_direct(
                 code_position=code_position,
             )
 
-            x += label_width * mm + gap
-            if x + label_width * mm > page_width - margin:
-                x = margin
-                y -= label_height * mm + gap
-                if y < margin:
+            x += label_width * mm + gap_horizontal
+            if x + label_width * mm > page_width - margin_right + 0.01:
+                x = margin_left
+                y -= label_height * mm + gap_vertical
+                if y < margin_bottom - 0.01:
                     c.showPage()
-                    x = margin
-                    y = page_height - label_height * mm - margin
+                    x = margin_left
+                    y = page_height - label_height * mm - margin_top
 
     c.save()
     buffer.seek(0)
@@ -1085,6 +1258,11 @@ with filter_container:
 # ---- Sidebar ----
 st.html(_SIZE_ROW_CSS)
 
+active_sheet_preset_name = st.session_state.get("sheet_preset_select")
+active_sheet_preset = SHEET_STOCK_PRESET_BY_NAME.get(active_sheet_preset_name)
+if active_sheet_preset:
+    apply_sheet_preset_to_state(active_sheet_preset)
+
 # 1. Data Fields
 with st.sidebar.expander("Data Fields", expanded=True):
     st.caption(
@@ -1176,50 +1354,44 @@ with st.sidebar.expander("Label Size", expanded=False):
     st.caption(
         "Select a preset to match a common label format, or choose **Custom** to set an exact width and height."
     )
-    UNIT_MM = "Metric (mm)"
-    UNIT_INCH_FRACTIONAL = "Imperial (inches)"
-    UNIT_INCH_DECIMAL = "Imperial (inch decimal)"
-
+    if active_sheet_preset:
+        st.caption(
+            f"Using {active_sheet_preset['name']} from Export Labels / PDF, so the exact label size is set from that sheet stock."
+        )
     unit_options = [UNIT_MM, UNIT_INCH_FRACTIONAL, UNIT_INCH_DECIMAL]
     ensure_choice("units_select", unit_options, TEMPLATE_DEFAULTS["units_select"])
     units = st.selectbox("Units", unit_options, key="units_select")
 
-    LABEL_PRESETS = [
-        ("Cryovial", 25, 12, 25, 12),
-        ("Small Label", 25, 67, 67, 25),
-        ("Wristband Label", 25, 254, 254, 25),
-        ("Small Plant Tag", 50, 25, 50, 25),
-        ("Cryobox / Tube", 30, 15, 30, 15),
-        ("General Purpose", 76, 25, 76, 25),
-        ("Food Label", 76, 51, 76, 51),
-        ("Tag Label", 57, 102, 57, 102),
-        ("Standard Plant Label", 70, 35, 70, 35),
-        ("Large Field Label", 90, 45, 90, 45),
-        ("Shipping Label", 102, 152, 102, 152),
-        ("Square Label", 51, 51, 51, 51),
+    preset_options = ["Custom"] + [
+        format_label_preset_option(preset_item[0], preset_item[1], preset_item[2], units)
+        for preset_item in LABEL_PRESETS
     ]
-
-    def format_preset_label(name, display_w_mm, display_h_mm, units_mode):
-        if units_mode == UNIT_MM:
-            return f"{name} ({display_w_mm} × {display_h_mm} mm)"
-        w_in, h_in = display_w_mm / 25.4, display_h_mm / 25.4
-        if units_mode == UNIT_INCH_FRACTIONAL:
-            return f"{name} ({format_fractional_inches(w_in)} × {format_fractional_inches(h_in)} inches)"
-        return f"{name} ({w_in:.3f} × {h_in:.3f} inches)"
-
-    preset_options = ["Custom"] + [format_preset_label(n, w, h, units) for n, w, h, _, _ in LABEL_PRESETS]
+    preset_dimension_lookup = {
+        format_label_preset_option(item[0], item[1], item[2], units): (
+            item[3],
+            item[4],
+            item[5] if len(item) > 5 else None,
+        )
+        for item in LABEL_PRESETS
+    }
     ensure_choice("preset_select", preset_options, TEMPLATE_DEFAULTS["preset_select"])
-    preset = st.selectbox("Preset", preset_options, key="preset_select",
-        help="Common label sizes for standard stock. Choose Custom to set your own exact width and height.")
+    preset = st.selectbox(
+        "Preset",
+        preset_options,
+        key="preset_select",
+        help="Common label sizes for standard stock. Choose Custom to set your own exact width and height.",
+        on_change=sync_sheet_preset_from_label_preset,
+        args=(preset_dimension_lookup,),
+    )
 
     if preset == "Custom":
         if units == UNIT_MM:
-            ensure_int_range("label_width_mm_slider", TEMPLATE_DEFAULTS["label_width_mm_slider"], 1, 1000)
-            ensure_int_range("label_height_mm_slider", TEMPLATE_DEFAULTS["label_height_mm_slider"], 1, 1000)
-            label_width = slider_with_input("Width (mm)", 10, 200, "label_width_mm_slider",
-                                            step=1, input_min=1, input_max=1000)
-            label_height = slider_with_input("Height (mm)", 10, 200, "label_height_mm_slider",
-                                             step=1, input_min=1, input_max=1000)
+            ensure_float_range("label_width_mm_slider", TEMPLATE_DEFAULTS["label_width_mm_slider"], 1.0, 1000.0)
+            ensure_float_range("label_height_mm_slider", TEMPLATE_DEFAULTS["label_height_mm_slider"], 1.0, 1000.0)
+            label_width = slider_with_input("Width (mm)", 10.0, 200.0, "label_width_mm_slider",
+                                            step=0.01, input_min=1.0, input_max=1000.0, format="%.2f")
+            label_height = slider_with_input("Height (mm)", 10.0, 200.0, "label_height_mm_slider",
+                                             step=0.01, input_min=1.0, input_max=1000.0, format="%.2f")
         elif units == UNIT_INCH_FRACTIONAL:
             ensure_float_range("label_width_in_slider", TEMPLATE_DEFAULTS["label_width_in_slider"], 0.05, 40.0)
             ensure_float_range("label_height_in_slider", TEMPLATE_DEFAULTS["label_height_in_slider"], 0.05, 40.0)
@@ -1236,6 +1408,10 @@ with st.sidebar.expander("Label Size", expanded=False):
             label_width, label_height = label_width_in * 25.4, label_height_in * 25.4
     else:
         label_width, label_height = LABEL_PRESETS[preset_options.index(preset) - 1][3:5]
+
+if active_sheet_preset:
+    label_width = active_sheet_preset["label_width_mm"]
+    label_height = active_sheet_preset["label_height_mm"]
 
 # 3. Code Settings
 with st.sidebar.expander("Code Settings", expanded=False):
@@ -1471,33 +1647,146 @@ with summary_container:
 with export_container:
     st.subheader("3. Export Labels / PDF")
     st.caption(
-        "Choose a page format then click **Generate Multi-Label PDF** to build the export. "
-        "**A4** and **Letter** tile labels in a grid on each sheet — useful for pre-cut label stock. "
+        "Choose a page format or sheet-stock preset, then click **Generate Multi-Label PDF** to build the export. "
+        "Sheet presets apply the label size, paper size, margins, and spacing for pre-cut stock. "
         "**LabelPrinter** outputs one label per page at the exact size set in Label Size, "
         "for direct-to-label roll printers (e.g. Dymo, Zebra, Brother)."
     )
 
-    page_format = st.selectbox("Page size / printer", ["A4", "Letter", "LabelPrinter"], index=2,
-        help="A4/Letter: tiles labels in a grid across a full sheet. LabelPrinter: one label per page at the exact Label Size, for roll printers (Dymo, Zebra, Brother).")
+    sheet_preset_options = [CUSTOM_SHEET_PRESET] + [preset["name"] for preset in SHEET_STOCK_PRESETS]
+    ensure_choice("sheet_preset_select", sheet_preset_options, TEMPLATE_DEFAULTS["sheet_preset_select"])
+    sheet_preset_name = st.selectbox(
+        "Sheet stock preset",
+        sheet_preset_options,
+        key="sheet_preset_select",
+        help="Choose a known tag/dot sheet to apply its measured label size, margins, and label spacing.",
+    )
 
-    page_margin = 5
-    label_gap = 2
-    if page_format in ("A4", "Letter"):
-        col_margin, col_gap = st.columns(2)
-        with col_margin:
-            page_margin = st.number_input(
-                "Page margin (mm)", min_value=0, max_value=30, value=5, step=1,
-                help="Margin around the edge of the page.",
+    selected_sheet_preset = SHEET_STOCK_PRESET_BY_NAME.get(sheet_preset_name)
+    if selected_sheet_preset:
+        page_format = selected_sheet_preset["page_format"]
+        page_margin_top = selected_sheet_preset["margin_top_mm"]
+        page_margin_right = selected_sheet_preset["margin_right_mm"]
+        page_margin_bottom = selected_sheet_preset["margin_bottom_mm"]
+        page_margin_left = selected_sheet_preset["margin_left_mm"]
+        label_gap_horizontal = selected_sheet_preset["gap_horizontal_mm"]
+        label_gap_vertical = selected_sheet_preset["gap_vertical_mm"]
+        st.caption(
+            f"{selected_sheet_preset['columns']} × {selected_sheet_preset['rows']} labels per {page_format} sheet; "
+            f"{selected_sheet_preset['label_width_mm']:.2f} × {selected_sheet_preset['label_height_mm']:.2f} mm labels; "
+            f"{label_gap_horizontal:.2f} mm horizontal gap, {label_gap_vertical:.2f} mm vertical gap."
+        )
+    else:
+        page_format_options = ["A4", "A4 Landscape", "Letter", "Letter Landscape", "LabelPrinter"]
+        ensure_choice("page_format_select", page_format_options, TEMPLATE_DEFAULTS["page_format_select"])
+        page_format = st.selectbox(
+            "Page size / printer",
+            page_format_options,
+            key="page_format_select",
+            help="A4/Letter portrait or landscape: tiles labels in a grid across a full sheet. LabelPrinter: one label per page at the exact Label Size, for roll printers (Dymo, Zebra, Brother).",
+        )
+
+        page_margin_top = page_margin_right = page_margin_bottom = page_margin_left = 0.0
+        label_gap_horizontal = label_gap_vertical = 0.0
+        if page_format in ("A4", "A4 Landscape", "Letter", "Letter Landscape"):
+            for key in (
+                "page_margin_top_mm_input",
+                "page_margin_right_mm_input",
+                "page_margin_bottom_mm_input",
+                "page_margin_left_mm_input",
+                "label_gap_horizontal_mm_input",
+                "label_gap_vertical_mm_input",
+            ):
+                ensure_float_range(key, TEMPLATE_DEFAULTS[key], 0.0, 100.0)
+
+            margin_top_col, margin_right_col, margin_bottom_col, margin_left_col = st.columns(4)
+            with margin_top_col:
+                page_margin_top = st.number_input(
+                    "Top margin (mm)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.5,
+                    format="%.2f",
+                    key="page_margin_top_mm_input",
+                )
+            with margin_right_col:
+                page_margin_right = st.number_input(
+                    "Right margin (mm)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.5,
+                    format="%.2f",
+                    key="page_margin_right_mm_input",
+                )
+            with margin_bottom_col:
+                page_margin_bottom = st.number_input(
+                    "Bottom margin (mm)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.5,
+                    format="%.2f",
+                    key="page_margin_bottom_mm_input",
+                )
+            with margin_left_col:
+                page_margin_left = st.number_input(
+                    "Left margin (mm)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.5,
+                    format="%.2f",
+                    key="page_margin_left_mm_input",
+                )
+
+            gap_horizontal_col, gap_vertical_col = st.columns(2)
+            with gap_horizontal_col:
+                label_gap_horizontal = st.number_input(
+                    "Horizontal label gap (mm)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.5,
+                    format="%.2f",
+                    key="label_gap_horizontal_mm_input",
+                    help="Space between label columns.",
+                )
+            with gap_vertical_col:
+                label_gap_vertical = st.number_input(
+                    "Vertical label gap (mm)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.5,
+                    format="%.2f",
+                    key="label_gap_vertical_mm_input",
+                    help="Space between label rows.",
+                )
+
+    if page_format in ("A4", "A4 Landscape", "Letter", "Letter Landscape"):
+        page_width_mm, page_height_mm = page_size_mm(page_format)
+        capacity_columns, capacity_rows = sheet_capacity(
+            page_width_mm,
+            page_height_mm,
+            label_width,
+            label_height,
+            page_margin_left,
+            page_margin_right,
+            page_margin_top,
+            page_margin_bottom,
+            label_gap_horizontal,
+            label_gap_vertical,
+        )
+        labels_per_sheet = capacity_columns * capacity_rows
+        if labels_per_sheet:
+            st.caption(
+                f"Current sheet capacity: {capacity_columns} columns × {capacity_rows} rows "
+                f"({labels_per_sheet} labels per sheet)."
             )
-        with col_gap:
-            label_gap = st.number_input(
-                "Label gap (mm)", min_value=0, max_value=20, value=2, step=1,
-                help="Gap between adjacent labels on the sheet.",
-            )
+        else:
+            st.warning("The current label size, margins, and gaps do not leave enough printable space for one label.")
 
     if st.button("Generate Multi-Label PDF"):
         if df_to_use.empty:
             st.error("Cannot generate PDF: No rows selected.")
+        elif page_format in ("A4", "A4 Landscape", "Letter", "Letter Landscape") and labels_per_sheet == 0:
+            st.error("Cannot generate PDF: the current sheet settings do not fit any labels on the page.")
         else:
             pdf_buffer = generate_sheet_direct(
                 df_to_use, visible_columns, code_column, code_type, highlight_column,
@@ -1515,8 +1804,12 @@ with export_container:
                 col_name_width_ratio=col_name_width_ratio,
                 code_position=code_position,
                 page_format=page_format,
-                page_margin=page_margin,
-                label_gap=label_gap,
+                page_margin_top=page_margin_top,
+                page_margin_right=page_margin_right,
+                page_margin_bottom=page_margin_bottom,
+                page_margin_left=page_margin_left,
+                label_gap_horizontal=label_gap_horizontal,
+                label_gap_vertical=label_gap_vertical,
                 repeat_count=repeat_count,
             )
             st.success(
