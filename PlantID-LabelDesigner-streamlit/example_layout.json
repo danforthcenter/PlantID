@@ -17,6 +17,7 @@
     "label_height_mm_slider": 35,
     "label_width_in_slider": 2.756,
     "label_height_in_slider": 1.378,
+    "add_code_check": true,
     "code_type_select": "QR",
     "code_column_select": null,
     "code_position_select": "Left",
