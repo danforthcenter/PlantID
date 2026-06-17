@@ -40,6 +40,8 @@ if "start_layout_source" not in st.session_state:
     st.session_state.start_layout_source = None
 if "layout_uploader_key" not in st.session_state:
     st.session_state.layout_uploader_key = 0
+if "layout_widget_generation" not in st.session_state:
+    st.session_state.layout_widget_generation = 0
 if "start_screen" not in st.session_state:
     st.session_state.start_screen = 1
 if "uploaded_csv_bytes" not in st.session_state:
@@ -130,6 +132,61 @@ TEMPLATE_DEFAULTS = {
 }
 PREFERRED_SPLIT_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID"]
 PREFERRED_CODE_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID", "Barcode"]
+EXAMPLE_LAYOUTS = [
+    {
+        "button_label": "Use Label Printer Example",
+        "source_label": "Example label printer layout",
+        "success_message": "Using label printer example layout",
+        "filename": "example_layout.json",
+    },
+    {
+        "button_label": "Use Sheet Printer Example",
+        "source_label": "Example sheet printer layout",
+        "success_message": "Using sheet printer example layout",
+        "filename": "example_sheet_layout.json",
+    },
+]
+
+
+def clear_layout_settings_state():
+    for key, default in TEMPLATE_DEFAULTS.items():
+        if isinstance(default, dict):
+            value = dict(default)
+        elif isinstance(default, list):
+            value = list(default)
+        else:
+            value = default
+        st.session_state[key] = value
+        if f"{key}__slider" in st.session_state:
+            st.session_state[f"{key}__slider"] = value
+        if f"{key}__input" in st.session_state:
+            st.session_state[f"{key}__input"] = value
+
+    st.session_state["loaded_template_metadata"] = None
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("column_label_override_"):
+            st.session_state[key] = ""
+
+
+def clear_layout_settings_state_if_requested():
+    if st.session_state.pop("_clear_layout_settings_on_next_run", False):
+        clear_layout_settings_state()
+
+
+def load_pending_example_template_if_requested():
+    filename = st.session_state.pop("_pending_example_template_filename", None)
+    if filename is None:
+        return
+
+    source_label = st.session_state.pop("_pending_example_template_source_label", None)
+    _, template_error = load_example_template(filename)
+    if template_error:
+        st.session_state.start_layout_source = None
+        st.session_state["_pending_template_error"] = template_error
+        return
+
+    st.session_state.start_layout_source = source_label
+
 
 def build_template_payload(label_width_mm=None, label_height_mm=None):
     settings = {
@@ -152,15 +209,7 @@ def build_template_payload(label_width_mm=None, label_height_mm=None):
     }
 
 
-def load_template_payload(uploaded_file):
-    if uploaded_file is None:
-        return None, "No file selected."
-    try:
-        raw = uploaded_file.getvalue()
-        parsed = json.loads(raw.decode("utf-8"))
-    except Exception as exc:
-        return None, f"Could not read template file: {exc}"
-
+def apply_template_payload(parsed, filename="template.json", fill_missing_defaults=False):
     if not isinstance(parsed, dict):
         return None, "Template must be a JSON object."
 
@@ -172,12 +221,18 @@ def load_template_payload(uploaded_file):
     for key in TEMPLATE_DEFAULTS:
         if key in settings:
             applied[key] = settings[key]
+        elif fill_missing_defaults:
+            applied[key] = TEMPLATE_DEFAULTS[key]
 
     if not applied:
         return None, "No supported settings were found in the template."
 
+    clear_layout_settings_state()
+
     for key, value in applied.items():
         st.session_state[key] = value
+
+    st.session_state.layout_widget_generation = st.session_state.get("layout_widget_generation", 0) + 1
 
     if "add_code_check" not in applied:
         st.session_state["add_code_check"] = (
@@ -207,7 +262,7 @@ def load_template_payload(uploaded_file):
         )
 
     st.session_state["loaded_template_metadata"] = {
-        "filename": getattr(uploaded_file, "name", "template.json"),
+        "filename": filename,
         "app_name": parsed.get("app", APP_NAME),
         "app_version": parsed.get("app_version", "Not recorded"),
         "template_version": parsed.get("template_version", "Not recorded"),
@@ -241,6 +296,38 @@ def load_template_payload(uploaded_file):
             pass
 
     return applied, None
+
+
+def load_template_payload(uploaded_file):
+    if uploaded_file is None:
+        return None, "No file selected."
+    try:
+        raw = uploaded_file.getvalue()
+        parsed = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        return None, f"Could not read template file: {exc}"
+
+    return apply_template_payload(
+        parsed,
+        filename=getattr(uploaded_file, "name", "template.json"),
+    )
+
+
+def load_example_template(filename):
+    example_layout_path = os.path.join(os.path.dirname(__file__), filename)
+    if not os.path.exists(example_layout_path):
+        return None, f"Could not find example layout: {filename}"
+    try:
+        with open(example_layout_path, "r") as layout_file:
+            parsed = json.load(layout_file)
+    except Exception as exc:
+        return None, f"Could not read example layout {filename}: {exc}"
+
+    return apply_template_payload(
+        parsed,
+        filename=filename,
+        fill_missing_defaults=True,
+    )
 
 
 def render_version_footer():
@@ -337,6 +424,38 @@ def ensure_multiselect_choices(key, options, default):
     ]
     if not st.session_state[key]:
         st.session_state[key] = default
+
+
+def layout_widget_key(key):
+    return f"{key}__layout_{st.session_state.get('layout_widget_generation', 0)}"
+
+
+def seed_layout_widget(key, default=None):
+    widget_key = layout_widget_key(key)
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = st.session_state.get(key, default)
+    return widget_key
+
+
+def reset_layout_widget(key):
+    widget_key = layout_widget_key(key)
+    if widget_key in st.session_state:
+        del st.session_state[widget_key]
+    return widget_key
+
+
+def sync_layout_widget_value(key, widget_key):
+    st.session_state[key] = st.session_state[widget_key]
+
+
+def sync_label_size_mode_widget(widget_key):
+    sync_layout_widget_value("label_size_mode_select", widget_key)
+    sync_label_size_mode()
+
+
+def sync_preset_select_widget(widget_key, preset_lookup):
+    sync_layout_widget_value("preset_select", widget_key)
+    sync_sheet_preset_from_label_preset(preset_lookup)
 
 
 def normalize_export_state():
@@ -1196,6 +1315,8 @@ def generate_sheet_direct(
 # ======================================================
 st.set_page_config(layout="wide")
 st.title(APP_NAME)
+clear_layout_settings_state_if_requested()
+load_pending_example_template_if_requested()
 
 # ======================
 # Start page
@@ -1286,26 +1407,33 @@ if st.session_state.df is None:
         elif st.session_state.start_layout_source == "Uploaded layout":
             st.session_state.start_layout_source = None
 
-        if st.button("Use Example Layout JSON", key="use_example_layout_btn"):
-            example_layout_path = os.path.join(os.path.dirname(__file__), "example_layout.json")
-            if os.path.exists(example_layout_path):
-                with open(example_layout_path, "r") as _lf:
-                    _layout = json.load(_lf)
-                _settings = _layout.get("settings", _layout)
-                for _key, _default in TEMPLATE_DEFAULTS.items():
-                    st.session_state[_key] = _settings.get(_key, _default)
-                st.session_state["loaded_template_metadata"] = {
-                    "filename": "example_layout.json",
-                    "app_name": _layout.get("app", APP_NAME),
-                    "app_version": _layout.get("app_version", APP_VERSION),
-                    "template_version": _layout.get("template_version", TEMPLATE_VERSION),
-                }
-            st.session_state.start_layout_source = "Example layout"
-            st.session_state.layout_uploader_key += 1
-            st.rerun()
+        example_cols = st.columns([1, 1, 4], gap="small")
+        for example_col, example_layout in zip(example_cols, EXAMPLE_LAYOUTS):
+            with example_col:
+                if st.button(
+                    example_layout["button_label"],
+                    key=f"use_{example_layout['filename']}_btn",
+                    width="stretch",
+                ):
+                    st.session_state["_pending_example_template_filename"] = example_layout["filename"]
+                    st.session_state["_pending_example_template_source_label"] = example_layout["source_label"]
+                    st.session_state.layout_uploader_key += 1
+                    st.rerun()
 
-        if st.session_state.start_layout_source == "Example layout":
-            st.success("Using example layout (default settings)")
+        pending_template_error = st.session_state.pop("_pending_template_error", None)
+        if pending_template_error:
+            st.error(pending_template_error)
+
+        selected_example = next(
+            (
+                example_layout
+                for example_layout in EXAMPLE_LAYOUTS
+                if st.session_state.start_layout_source == example_layout["source_label"]
+            ),
+            None,
+        )
+        if selected_example is not None:
+            st.success(selected_example["success_message"])
 
         layout_ready = st.session_state.start_layout_source is not None
         _nav_back_col, _nav_go_col, _nav_spacer = st.columns([1, 2, 5], gap="small")
@@ -1554,12 +1682,19 @@ with st.sidebar.expander("Data Fields", expanded=True):
         visible_column_options,
         visible_column_defaults,
     )
+    visible_columns_widget_key = seed_layout_widget(
+        "visible_columns_multiselect",
+        st.session_state["visible_columns_multiselect"],
+    )
     visible_columns = st.multiselect(
         "Columns to display",
         visible_column_options,
-        key="visible_columns_multiselect",
+        key=visible_columns_widget_key,
+        on_change=sync_layout_widget_value,
+        args=("visible_columns_multiselect", visible_columns_widget_key),
         help="Select which CSV columns to print on each label. The order here controls the order text appears on the label.",
     )
+    st.session_state["visible_columns_multiselect"] = visible_columns
 
     split_column_enabled = st.checkbox(
         "Split a column into new fields",
@@ -1647,15 +1782,18 @@ with st.sidebar.expander("Label Size", expanded=False):
         LABEL_SIZE_MODE_OPTIONS,
         TEMPLATE_DEFAULTS["label_size_mode_select"],
     )
+    label_size_mode_widget_key = reset_layout_widget("label_size_mode_select")
     label_size_mode = st.radio(
         "Size source",
         LABEL_SIZE_MODE_OPTIONS,
         index=LABEL_SIZE_MODE_OPTIONS.index(st.session_state["label_size_mode_select"]),
         horizontal=True,
-        key="label_size_mode_select",
+        key=label_size_mode_widget_key,
         help="Use Custom Size for exact dimensions, or Preset size for common label formats.",
-        on_change=sync_label_size_mode,
+        on_change=sync_label_size_mode_widget,
+        args=(label_size_mode_widget_key,),
     )
+    st.session_state["label_size_mode_select"] = label_size_mode
 
     units = st.session_state.get("units_select", TEMPLATE_DEFAULTS["units_select"])
     preset_options = ["Custom"] + [
@@ -1708,14 +1846,17 @@ with st.sidebar.expander("Label Size", expanded=False):
             label_width, label_height = label_width_in * 25.4, label_height_in * 25.4
     else:
         ensure_choice("preset_select", preset_size_options, preset_size_options[0])
+        preset_widget_key = reset_layout_widget("preset_select")
         preset = st.selectbox(
             "Preset size",
             preset_size_options,
-            key="preset_select",
+            index=preset_size_options.index(st.session_state["preset_select"]),
+            key=preset_widget_key,
             help="Common label sizes for standard stock.",
-            on_change=sync_sheet_preset_from_label_preset,
-            args=(preset_dimension_lookup,),
+            on_change=sync_preset_select_widget,
+            args=(preset_widget_key, preset_dimension_lookup),
         )
+        st.session_state["preset_select"] = preset
         label_width, label_height = preset_dimension_lookup[preset][:2]
 
 if active_sheet_preset:
@@ -1804,18 +1945,39 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
         help="Draw a thin border around the edge of each label. Useful for cutting guidance on sheet printouts.")
 
     ensure_bool("show_column_names_check", TEMPLATE_DEFAULTS["show_column_names_check"])
-    show_column_names = st.checkbox("Show column names", key="show_column_names_check",
+    show_column_names_widget_key = seed_layout_widget(
+        "show_column_names_check",
+        st.session_state["show_column_names_check"],
+    )
+    show_column_names = st.checkbox("Show column names", key=show_column_names_widget_key,
+        on_change=sync_layout_widget_value,
+        args=("show_column_names_check", show_column_names_widget_key),
         help="Print the CSV column name alongside each value on the label, e.g. 'Genotype: Col-0'.")
+    st.session_state["show_column_names_check"] = show_column_names
 
     ensure_float_range("row_height_factor_slider", TEMPLATE_DEFAULTS["row_height_factor_slider"], 0.1, 1.5)
-    row_height_factor = st.slider("Row height factor", 0.1, 1.5, key="row_height_factor_slider",
+    row_height_factor_widget_key = seed_layout_widget(
+        "row_height_factor_slider",
+        st.session_state["row_height_factor_slider"],
+    )
+    row_height_factor = st.slider("Row height factor", 0.1, 1.5, key=row_height_factor_widget_key,
+        on_change=sync_layout_widget_value,
+        args=("row_height_factor_slider", row_height_factor_widget_key),
         help="Controls line spacing between text rows. Lower values pack more lines in; higher values give more breathing room.")
+    st.session_state["row_height_factor_slider"] = row_height_factor
 
     ensure_int_range("label_padding_slider", TEMPLATE_DEFAULTS["label_padding_slider"], 0, 15)
+    label_padding_widget_key = seed_layout_widget(
+        "label_padding_slider",
+        st.session_state["label_padding_slider"],
+    )
     label_padding = st.slider(
-        "Inner padding (mm)", 0, 15, key="label_padding_slider",
+        "Inner padding (mm)", 0, 15, key=label_padding_widget_key,
+        on_change=sync_layout_widget_value,
+        args=("label_padding_slider", label_padding_widget_key),
         help="Space between the label edge and its content.",
     )
+    st.session_state["label_padding_slider"] = label_padding
 
     if show_column_names:
         ensure_int_range("col_name_width_ratio_slider", TEMPLATE_DEFAULTS["col_name_width_ratio_slider"], 0, 60)
@@ -1828,8 +1990,15 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 
     max_text_left_offset = max(1, int(label_width / 2))
     ensure_int_range("text_left_offset_slider", TEMPLATE_DEFAULTS["text_left_offset_slider"], 0, max_text_left_offset)
-    text_left_offset = st.slider("Text left offset (mm)", 0, max_text_left_offset, key="text_left_offset_slider",
+    text_left_offset_widget_key = seed_layout_widget(
+        "text_left_offset_slider",
+        st.session_state["text_left_offset_slider"],
+    )
+    text_left_offset = st.slider("Text left offset (mm)", 0, max_text_left_offset, key=text_left_offset_widget_key,
+        on_change=sync_layout_widget_value,
+        args=("text_left_offset_slider", text_left_offset_widget_key),
         help="Shift the text block inward from the left edge. Useful when the code is on the left and overlaps the text.")
+    st.session_state["text_left_offset_slider"] = text_left_offset
 
     label_font_options = ["Helvetica", "Times-Roman", "Courier"]
     ensure_choice("label_font_select", label_font_options, TEMPLATE_DEFAULTS["label_font_select"])
@@ -1913,6 +2082,7 @@ with st.sidebar:
         )
     st.divider()
     if st.button("↩ Restart — return to Start page", width="stretch"):
+        st.session_state["_clear_layout_settings_on_next_run"] = True
         st.session_state.df = None
         st.session_state.data_source = None
         st.session_state.start_selected_source = None
@@ -1979,14 +2149,18 @@ with export_container:
     )
 
     ensure_choice("printer_type_select", PRINTER_TYPE_OPTIONS, TEMPLATE_DEFAULTS["printer_type_select"])
+    printer_type_widget_key = reset_layout_widget("printer_type_select")
     printer_type = st.radio(
         "Printer type",
         PRINTER_TYPE_OPTIONS,
         index=PRINTER_TYPE_OPTIONS.index(st.session_state["printer_type_select"]),
         horizontal=True,
-        key="printer_type_select",
+        key=printer_type_widget_key,
+        on_change=sync_layout_widget_value,
+        args=("printer_type_select", printer_type_widget_key),
         help="Sheet printer tiles labels on A4/Letter stock. Label printer outputs one label per page at the exact Label Size.",
     )
+    st.session_state["printer_type_select"] = printer_type
 
     labels_per_sheet = 0
     sheet_start_slot = 1
@@ -2001,24 +2175,35 @@ with export_container:
         )
     else:
         ensure_choice("sheet_setup_select", SHEET_SETUP_OPTIONS, TEMPLATE_DEFAULTS["sheet_setup_select"])
+        sheet_setup_widget_key = reset_layout_widget("sheet_setup_select")
         sheet_setup = st.radio(
             "Sheet setup",
             SHEET_SETUP_OPTIONS,
             index=SHEET_SETUP_OPTIONS.index(st.session_state["sheet_setup_select"]),
             horizontal=True,
-            key="sheet_setup_select",
+            key=sheet_setup_widget_key,
+            on_change=sync_layout_widget_value,
+            args=("sheet_setup_select", sheet_setup_widget_key),
             help="Use a sheet stock preset for known label templates, or custom sheet spacing for a manual page setup.",
         )
+        st.session_state["sheet_setup_select"] = sheet_setup
 
         if sheet_setup == SHEET_SETUP_PRESET:
             sheet_preset_options = [preset["name"] for preset in SHEET_STOCK_PRESETS]
             ensure_choice("sheet_preset_select", sheet_preset_options, sheet_preset_options[0])
-            sheet_preset_name = st.selectbox(
-                "Sheet stock preset",
-                sheet_preset_options,
-                key="sheet_preset_select",
-                help="Choose a known tag/dot sheet to apply its measured label size, margins, and label spacing.",
-            )
+            sheet_preset_widget_key = reset_layout_widget("sheet_preset_select")
+            sheet_preset_col, _sheet_preset_spacer = st.columns([2, 3])
+            with sheet_preset_col:
+                sheet_preset_name = st.selectbox(
+                    "Sheet stock preset",
+                    sheet_preset_options,
+                    index=sheet_preset_options.index(st.session_state["sheet_preset_select"]),
+                    key=sheet_preset_widget_key,
+                    on_change=sync_layout_widget_value,
+                    args=("sheet_preset_select", sheet_preset_widget_key),
+                    help="Choose a known tag/dot sheet to apply its measured label size, margins, and label spacing.",
+                )
+            st.session_state["sheet_preset_select"] = sheet_preset_name
 
             selected_sheet_preset = SHEET_STOCK_PRESET_BY_NAME.get(sheet_preset_name)
             if selected_sheet_preset:
@@ -2135,14 +2320,16 @@ with export_container:
                 f"({labels_per_sheet} labels per sheet)."
             )
             ensure_int_range("sheet_start_slot_input", TEMPLATE_DEFAULTS["sheet_start_slot_input"], 1, labels_per_sheet)
-            sheet_start_slot = st.number_input(
-                "Start at label position",
-                min_value=1,
-                max_value=labels_per_sheet,
-                step=1,
-                key="sheet_start_slot_input",
-                help="Use the 1-based label position on the first sheet, counted left-to-right then top-to-bottom.",
-            )
+            sheet_start_col, _sheet_start_spacer = st.columns([1, 4])
+            with sheet_start_col:
+                sheet_start_slot = st.number_input(
+                    "Start at label position",
+                    min_value=1,
+                    max_value=labels_per_sheet,
+                    step=1,
+                    key="sheet_start_slot_input",
+                    help="Use the 1-based label position on the first sheet, counted left-to-right then top-to-bottom.",
+                )
             start_row = (sheet_start_slot - 1) // capacity_columns + 1
             start_column = (sheet_start_slot - 1) % capacity_columns + 1
             st.caption(f"First label will print at row {start_row}, column {start_column} on the first sheet.")
