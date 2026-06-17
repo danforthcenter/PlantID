@@ -89,6 +89,7 @@ TEMPLATE_DEFAULTS = {
     "label_height_mm_slider": 35,
     "label_width_in_slider": 2.75,
     "label_height_in_slider": 1.37,
+    "add_code_check": True,
     "code_type_select": "QR",
     "code_column_select": None,
     "code_position_select": "Left",
@@ -177,6 +178,11 @@ def load_template_payload(uploaded_file):
 
     for key, value in applied.items():
         st.session_state[key] = value
+
+    if "add_code_check" not in applied:
+        st.session_state["add_code_check"] = (
+            st.session_state.get("code_type_select") != "None"
+        )
 
     sheet_preset_name = st.session_state.get("sheet_preset_select")
     page_format_name = st.session_state.get("page_format_select")
@@ -1719,14 +1725,28 @@ if active_sheet_preset:
 # 3. Code Settings
 with st.sidebar.expander("Code Settings", expanded=False):
     st.caption(
-        "Add a machine-readable code to each label. Typically the Plant/Sample ID."
+        "Add a machine-readable QR code or barcode to each label."
     )
-    code_type_options = ["QR", "Barcode", "None"]
-    ensure_choice("code_type_select", code_type_options, TEMPLATE_DEFAULTS["code_type_select"])
-    code_type = st.selectbox("Code type", code_type_options, key="code_type_select",
-        help="QR codes can be scanned by any smartphone camera. Barcodes (Code 128) suit handheld scanners and take less vertical space. Choose None to use the full label area for text.")
 
-    if code_type != "None":
+    if "add_code_check" not in st.session_state:
+        st.session_state["add_code_check"] = st.session_state.get("code_type_select") != "None"
+    ensure_bool("add_code_check", TEMPLATE_DEFAULTS["add_code_check"])
+    add_code = st.checkbox(
+        "Add a QR/Barcode",
+        key="add_code_check",
+        help="Include a machine-readable value, usually the plant or sample ID.",
+    )
+
+    if add_code:
+        code_type_options = ["QR", "Barcode"]
+        ensure_choice("code_type_select", code_type_options, TEMPLATE_DEFAULTS["code_type_select"])
+        code_type = st.selectbox(
+            "Code type",
+            code_type_options,
+            key="code_type_select",
+            help="QR codes can be scanned by any smartphone camera. Barcodes (Code 128) suit handheld scanners and take less vertical space.",
+        )
+
         code_column_options = active_df.columns.tolist()
         ensure_choice("code_column_select", code_column_options, default_code_column)
         code_column = st.selectbox("Code column", code_column_options, key="code_column_select",
@@ -1739,36 +1759,40 @@ with st.sidebar.expander("Code Settings", expanded=False):
             code_position_options,
             key="code_position_select"
         )
+
+        if code_type == "QR":
+            qr_max = max(9, int(label_height - 2))
+            ensure_int_range("qr_size_slider", min(18, qr_max), 1, 500)
+            qr_size = slider_with_input("QR size (mm)", 8, qr_max, "qr_size_slider",
+                step=1, input_min=1, input_max=500,
+                help="Side length of the QR code square. Larger codes are easier to scan from a distance but take more label space.")
+            barcode_width = barcode_height = 0
+        else:
+            max_barcode_width = max(16, int(label_width - 5))
+            max_barcode_height = max(6, int(label_height - 5))
+            ensure_int_range("barcode_width_slider", TEMPLATE_DEFAULTS["barcode_width_slider"], 1, 500)
+            ensure_int_range("barcode_height_slider", TEMPLATE_DEFAULTS["barcode_height_slider"], 1, 500)
+            barcode_width = slider_with_input("Barcode width (mm)", 15, max_barcode_width, "barcode_width_slider",
+                step=1, input_min=1, input_max=500,
+                help="Horizontal length of the barcode. Wider barcodes are more reliably scanned.")
+            barcode_height = slider_with_input("Barcode height (mm)", 5, max_barcode_height, "barcode_height_slider",
+                step=1, input_min=1, input_max=500,
+                help="Vertical height of the barcode bars.")
+            qr_size = 0
+
+        max_qr_left_offset = max(1, int(label_width / 2))
+        ensure_int_range("qr_left_offset_slider", TEMPLATE_DEFAULTS["qr_left_offset_slider"], 0, max_qr_left_offset)
+        qr_left_offset = st.slider("Code offset from edge (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider",
+            help="Nudge the code inward from the label edge — useful if the code is being clipped by the label border or printer margin.")
     else:
+        code_type = "None"
         code_column = None
         code_position = "Left"
-
-    if code_type == "QR":
-        qr_max = max(9, int(label_height - 2))
-        ensure_int_range("qr_size_slider", min(18, qr_max), 1, 500)
-        qr_size = slider_with_input("QR size (mm)", 8, qr_max, "qr_size_slider",
-            step=1, input_min=1, input_max=500,
-            help="Side length of the QR code square. Larger codes are easier to scan from a distance but take more label space.")
-        barcode_width = barcode_height = 0
-    elif code_type == "Barcode":
-        max_barcode_width = max(16, int(label_width - 5))
-        max_barcode_height = max(6, int(label_height - 5))
-        ensure_int_range("barcode_width_slider", TEMPLATE_DEFAULTS["barcode_width_slider"], 1, 500)
-        ensure_int_range("barcode_height_slider", TEMPLATE_DEFAULTS["barcode_height_slider"], 1, 500)
-        barcode_width = slider_with_input("Barcode width (mm)", 15, max_barcode_width, "barcode_width_slider",
-            step=1, input_min=1, input_max=500,
-            help="Horizontal length of the barcode. Wider barcodes are more reliably scanned.")
-        barcode_height = slider_with_input("Barcode height (mm)", 5, max_barcode_height, "barcode_height_slider",
-            step=1, input_min=1, input_max=500,
-            help="Vertical height of the barcode bars.")
-        qr_size = 0
-    else:
         qr_size = barcode_width = barcode_height = 0
-
-    max_qr_left_offset = max(1, int(label_width / 2))
-    ensure_int_range("qr_left_offset_slider", TEMPLATE_DEFAULTS["qr_left_offset_slider"], 0, max_qr_left_offset)
-    qr_left_offset = st.slider("Code offset from edge (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider",
-        help="Nudge the code inward from the label edge — useful if the code is being clipped by the label border or printer margin.")
+        qr_left_offset = st.session_state.get(
+            "qr_left_offset_slider",
+            TEMPLATE_DEFAULTS["qr_left_offset_slider"],
+        )
 
 # 4. Design & Aesthetics
 with st.sidebar.expander("Design & Aesthetics", expanded=False):
