@@ -50,7 +50,7 @@ if "uploaded_csv_name" not in st.session_state:
     st.session_state.uploaded_csv_name = None
 
 APP_NAME = "PlantID Label Designer"
-APP_VERSION = "0.9"
+APP_VERSION = "0.10"
 TEMPLATE_VERSION = 0
 
 PRINTER_TYPE_SHEET = "Sheet printer"
@@ -98,6 +98,8 @@ TEMPLATE_DEFAULTS = {
     "qr_size_slider": 18,
     "barcode_width_slider": 25,
     "barcode_height_slider": 10,
+    "barcode_text_position_select": "Beside barcode",
+    "barcode_above_columns_multiselect": [],
     "qr_left_offset_slider": 2,
     "show_column_names_check": True,
     "row_height_factor_slider": 0.9,
@@ -993,6 +995,8 @@ def draw_label_on_canvas(
     highlight_color=None,
     col_name_width_ratio=0.35,
     code_position="Left",
+    barcode_text_position="Beside barcode",
+    barcode_above_columns=None,
 ):
     def font_variant(base_font, variant):
         variants = {
@@ -1073,6 +1077,26 @@ def draw_label_on_canvas(
         c.drawCentredString(0, 0, value)
         c.restoreState()
 
+    stacked_barcode = (
+        code_column is not None and code_type == "Barcode"
+        and barcode_text_position != "Beside barcode"
+    )
+    above_columns = []
+    below_columns = []
+    if stacked_barcode:
+        selected_above = set(barcode_above_columns or [])
+        above_columns = [col for col in visible_columns if
+                         barcode_text_position == "Above barcode" or
+                         (barcode_text_position == "Above and below barcode" and col in selected_above)]
+        below_columns = [col for col in visible_columns if col not in above_columns]
+        # Reserve a complete line box for each field, including highlight padding.
+        stacked_row_height = max(label_font_size + 4, label_font_size * 1.5 * row_height_factor)
+        code_gap = 2 * mm
+        block_height = (barcode_height * mm + len(visible_columns) * stacked_row_height
+                        + bool(above_columns) * code_gap + bool(below_columns) * code_gap)
+        stacked_bottom = y + (lh_pt - block_height) / 2
+        stacked_code_y = stacked_bottom + len(below_columns) * stacked_row_height + bool(below_columns) * code_gap
+
     # ---- 3. Code (QR/Barcode) Logic ----
     text_x = x + side_col_width + pad_pt
     text_right = x + lw_pt - pad_pt  # default: text fills to right edge
@@ -1108,13 +1132,26 @@ def draw_label_on_canvas(
                 humanReadable=False,
             )
 
-            if code_position == "Right":
+            if stacked_barcode:
+                code_y = stacked_code_y
+                code_x = (x + lw_pt - pad_pt - bw_pt - qr_left_offset * mm
+                          if code_position == "Right" else
+                          x + side_col_width + pad_pt + qr_left_offset * mm)
+            elif code_position == "Right":
                 code_x = x + lw_pt - bw_pt - (qr_left_offset * mm)
                 text_right = code_x - 2 * mm
             else:
                 code_x = x + side_col_width + (qr_left_offset * mm)
                 text_x = code_x + bw_pt + 2 * mm
-            bc.drawOn(c, code_x, code_y)
+            c.saveState()
+            if stacked_barcode:
+                # Code128 includes quiet zones and checksum bars in its actual width.
+                c.translate(code_x, code_y)
+                c.scale(bw_pt / bc.width, 1)
+                bc.drawOn(c, 0, 0)
+            else:
+                bc.drawOn(c, code_x, code_y)
+            c.restoreState()
 
     text_x += text_left_offset * mm
     avail_w = text_right - text_x
@@ -1127,10 +1164,19 @@ def draw_label_on_canvas(
     name_right_x = text_x + avail_w * col_name_width_ratio
     val_left_x = text_x + avail_w * (col_name_width_ratio + 0.05)
 
-    for idx, col_name in enumerate(visible_columns):
+    text_rows = [(col, text_y_start - idx * row_height) for idx, col in enumerate(visible_columns)]
+    if stacked_barcode:
+        text_rows = []
+        for columns, top in (
+            (above_columns, stacked_code_y + barcode_height * mm + code_gap + len(above_columns) * stacked_row_height),
+            (below_columns, stacked_code_y - code_gap),
+        ):
+            text_rows.extend((col, top - idx * stacked_row_height - label_font_size - 2)
+                             for idx, col in enumerate(columns))
+
+    for col_name, y_pos in text_rows:
         val = str(df_row[col_name])
         display_name = column_label_map.get(col_name, col_name)
-        y_pos = text_y_start - idx * row_height
 
         c.saveState()
         if show_column_names:
@@ -1203,6 +1249,8 @@ def generate_sheet_direct(
     label_gap_vertical=None,
     repeat_count=1,
     sheet_start_slot=1,
+    barcode_text_position="Beside barcode",
+    barcode_above_columns=None,
 ):
     if page_margin_top is None:
         page_margin_top = page_margin
@@ -1294,6 +1342,8 @@ def generate_sheet_direct(
                 highlight_color=highlight_color,
                 col_name_width_ratio=col_name_width_ratio,
                 code_position=code_position,
+                barcode_text_position=barcode_text_position,
+                barcode_above_columns=barcode_above_columns,
             )
 
             x += label_width * mm + gap_horizontal
@@ -1864,6 +1914,8 @@ if active_sheet_preset:
     label_height = active_sheet_preset["label_height_mm"]
 
 # 3. Code Settings
+barcode_text_position = "Beside barcode"
+barcode_above_columns = []
 with st.sidebar.expander("Code Settings", expanded=False):
     st.caption(
         "Add a machine-readable QR code or barcode to each label."
@@ -1909,6 +1961,28 @@ with st.sidebar.expander("Code Settings", expanded=False):
                 help="Side length of the QR code square. Larger codes are easier to scan from a distance but take more label space.")
             barcode_width = barcode_height = 0
         else:
+            text_position_options = ["Beside barcode", "Above barcode", "Below barcode", "Above and below barcode"]
+            ensure_choice("barcode_text_position_select", text_position_options, "Beside barcode")
+            barcode_text_position = st.selectbox(
+                "Text placement", text_position_options, key="barcode_text_position_select",
+                help="Place displayed fields beside, above, below, or on both sides of the barcode.",
+            )
+            if barcode_text_position == "Above and below barcode":
+                ensure_multiselect_choices("barcode_above_columns_multiselect", visible_columns, [])
+                above_widget_key = seed_layout_widget(
+                    "barcode_above_columns_multiselect", st.session_state["barcode_above_columns_multiselect"])
+                st.session_state[above_widget_key] = [
+                    col for col in st.session_state[above_widget_key] if col in visible_columns
+                ]
+                barcode_above_columns = st.multiselect(
+                    "Fields above barcode", visible_columns, key=above_widget_key,
+                    on_change=sync_layout_widget_value,
+                    args=("barcode_above_columns_multiselect", above_widget_key),
+                    help="All other displayed fields go below. Field order follows Columns to display.",
+                )
+                st.session_state["barcode_above_columns_multiselect"] = barcode_above_columns
+                below_fields = [col for col in visible_columns if col not in barcode_above_columns]
+                st.caption("Fields below barcode: " + (", ".join(below_fields) or "None"))
             max_barcode_width = max(16, int(label_width - 5))
             max_barcode_height = max(6, int(label_height - 5))
             ensure_int_range("barcode_width_slider", TEMPLATE_DEFAULTS["barcode_width_slider"], 1, 500)
@@ -2100,6 +2174,16 @@ if rename_columns_enabled:
 else:
     column_label_map = {column: column for column in active_df.columns.tolist()}
 
+barcode_layout_fits = True
+if code_type == "Barcode" and barcode_text_position != "Beside barcode":
+    above_count = (len(visible_columns) if barcode_text_position == "Above barcode" else
+                   len(barcode_above_columns) if barcode_text_position == "Above and below barcode" else 0)
+    below_count = len(visible_columns) - above_count
+    required_height = (barcode_height * mm
+                       + len(visible_columns) * max(label_font_size + 4, label_font_size * 1.5 * row_height_factor)
+                       + (bool(above_count) + bool(below_count)) * 2 * mm)
+    barcode_layout_fits = required_height <= (label_height - 2 * label_padding) * mm
+
 with summary_container:
     st.subheader("1. Dataset Summary & Live Preview")
     st.caption(
@@ -2112,6 +2196,12 @@ with summary_container:
     c3.metric("Data Source", st.session_state.data_source)
 
     if not filtered_df.empty:
+        if not barcode_layout_fits:
+            st.warning(
+                "The barcode and text exceed the space inside the label padding. "
+                "The preview remains visible, but content may extend beyond the label edges. "
+                "Increase label height or reduce barcode height, font size, row spacing, or padding before exporting."
+            )
         buffer = io.BytesIO()
         c_prev = canvas.Canvas(buffer, pagesize=(label_width * mm, label_height * mm))
 
@@ -2131,6 +2221,8 @@ with summary_container:
             highlight_color=highlight_color,
             col_name_width_ratio=col_name_width_ratio,
             code_position=code_position,
+            barcode_text_position=barcode_text_position,
+            barcode_above_columns=barcode_above_columns,
         )
         c_prev.save()
         buffer.seek(0)
@@ -2138,7 +2230,7 @@ with summary_container:
         _img_bytes = io.BytesIO()
         _pil_img.save(_img_bytes, format="PNG")
         st.image(_img_bytes.getvalue(), caption=f"Previewing Row {row_index + 1}")
-    else:
+    elif filtered_df.empty:
         st.info("No rows match the filter for preview.")
 
 with export_container:
@@ -2339,6 +2431,8 @@ with export_container:
     if st.button("Generate Multi-Label PDF"):
         if df_to_use.empty:
             st.error("Cannot generate PDF: No rows selected.")
+        elif not barcode_layout_fits:
+            st.error("Cannot generate PDF: adjust the barcode and text layout to fit the label.")
         elif page_format in SHEET_PAGE_FORMAT_OPTIONS and labels_per_sheet == 0:
             st.error("Cannot generate PDF: the current sheet settings do not fit any labels on the page.")
         else:
@@ -2357,6 +2451,8 @@ with export_container:
                 highlight_color=highlight_color,
                 col_name_width_ratio=col_name_width_ratio,
                 code_position=code_position,
+                barcode_text_position=barcode_text_position,
+                barcode_above_columns=barcode_above_columns,
                 page_format=page_format,
                 page_margin_top=page_margin_top,
                 page_margin_right=page_margin_right,

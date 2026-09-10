@@ -1,7 +1,7 @@
 {
   "template_version": 0,
   "app": "PlantID Label Designer",
-  "app_version": "0.9",
+  "app_version": "0.10",
   "settings": {
     "split_column_enabled_check": false,
     "split_column_select": "PlantID",
@@ -61,6 +61,8 @@
     "filter_enabled_check": false,
     "filter_count_input": 1,
     "filter_match_mode_select": "Match all filters",
-    "sheet_start_slot_input": 1
+    "sheet_start_slot_input": 1,
+    "barcode_text_position_select": "Beside barcode",
+    "barcode_above_columns_multiselect": []
   }
 }
