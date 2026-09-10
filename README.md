@@ -34,7 +34,9 @@ Upload a CSV with your plant metadata. Configure label settings. Download the PD
 
 | Version | Current |
 |---|---|
-| App | 0.9 |
+| App | 0.10 |
 | Layout template schema | 0 |
 
 The **app version** reflects the overall release of PlantID Label Designer. The **layout template schema version** is an independent version integer that tracks the structure of saved layout `.json` files. It only increments when a breaking change is made to the layout format (e.g. fields renamed or restructured). When loading a saved layout, the app will warn if the schema versions do not match.
+
+App 0.10 adds barcode text placement above, below, or on both sides of the barcode. Saved layouts include the placement and fields selected above the barcode. Older layouts retain the beside-barcode default; the template schema remains version 0.

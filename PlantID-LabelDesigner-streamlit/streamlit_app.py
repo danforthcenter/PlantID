@@ -50,7 +50,7 @@ if "uploaded_csv_name" not in st.session_state:
     st.session_state.uploaded_csv_name = None
 
 APP_NAME = "PlantID Label Designer"
-APP_VERSION = "0.9"
+APP_VERSION = "0.10"
 TEMPLATE_VERSION = 0
 
 PRINTER_TYPE_SHEET = "Sheet printer"
