@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import os
 import json
+import hashlib
 import pypdfium2 as pdfium
 
 from fractions import Fraction
@@ -18,6 +19,8 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from label_presets import (
     CUSTOM_SHEET_PRESET,
     LABEL_PRESETS,
+    label_preset_matches,
+    label_preset_table_row,
     SHEET_STOCK_PRESET_BY_NAME,
     SHEET_STOCK_PRESETS,
     UNIT_INCH_DECIMAL,
@@ -87,6 +90,7 @@ TEMPLATE_DEFAULTS = {
     "label_size_mode_select": LABEL_SIZE_CUSTOM,
     "units_select": "Metric (mm)",
     "preset_select": "Custom",
+    "last_label_preset_name": "Zebra Z-Select 4000D 10010043",
     "label_width_mm_slider": 70,
     "label_height_mm_slider": 35,
     "label_width_in_slider": 2.75,
@@ -455,9 +459,13 @@ def sync_label_size_mode_widget(widget_key):
     sync_label_size_mode()
 
 
-def sync_preset_select_widget(widget_key, preset_lookup):
-    sync_layout_widget_value("preset_select", widget_key)
+def sync_preset_table_selection(widget_key, options, preset_lookup):
+    rows = st.session_state.get(widget_key, {}).get("selection", {}).get("rows", [])
+    if not rows or not 0 <= rows[0] < len(options):
+        return
+    st.session_state["preset_select"] = options[rows[0]]
     sync_sheet_preset_from_label_preset(preset_lookup)
+
 
 
 def normalize_export_state():
@@ -580,12 +588,6 @@ def find_sheet_preset_for_label_size(width_mm, height_mm, preferred_sheet_name=N
         return None
     if preferred_sheet_name and preferred_sheet_name in SHEET_STOCK_PRESET_BY_NAME:
         return SHEET_STOCK_PRESET_BY_NAME[preferred_sheet_name]
-
-    for preset in SHEET_STOCK_PRESETS:
-        width_matches = abs(preset["label_width_mm"] - width_mm) <= tolerance
-        height_matches = abs(preset["label_height_mm"] - height_mm) <= tolerance
-        if width_matches and height_matches:
-            return preset
     return None
 
 
@@ -595,6 +597,7 @@ def sync_sheet_preset_from_label_preset(preset_lookup):
     if not dimensions:
         st.session_state["printer_type_select"] = PRINTER_TYPE_LABEL
         st.session_state["page_format_select"] = LABEL_PRINTER_PAGE_FORMAT
+        st.session_state.pop("auto_sheet_stock_notice", None)
         return
 
     width_mm, height_mm, preferred_sheet_name = dimensions
@@ -602,6 +605,19 @@ def sync_sheet_preset_from_label_preset(preset_lookup):
     st.session_state["label_height_mm_slider"] = round(height_mm, 2)
     st.session_state["label_width_in_slider"] = round(width_mm / 25.4, 4)
     st.session_state["label_height_in_slider"] = round(height_mm / 25.4, 4)
+
+    if preferred_sheet_name == CUSTOM_SHEET_PRESET:
+        st.session_state["printer_type_select"] = PRINTER_TYPE_SHEET
+        st.session_state["sheet_setup_select"] = SHEET_SETUP_CUSTOM
+        if st.session_state.get("page_format_select") == LABEL_PRINTER_PAGE_FORMAT:
+            st.session_state["page_format_select"] = (
+                "A4" if selected_preset.startswith("LabTAG ") else "Letter"
+            )
+        st.session_state["auto_sheet_stock_notice"] = (
+            "This preset is supplied on sheets. Exact pitch and margins are not "
+            "stored, so Sheet printer with custom spacing has been selected."
+        )
+        return
 
     matching_sheet = find_sheet_preset_for_label_size(
         width_mm,
@@ -613,18 +629,50 @@ def sync_sheet_preset_from_label_preset(preset_lookup):
         st.session_state["sheet_setup_select"] = SHEET_SETUP_PRESET
         st.session_state["sheet_preset_select"] = matching_sheet["name"]
         st.session_state["page_format_select"] = matching_sheet["page_format"]
+        st.session_state["auto_sheet_stock_notice"] = (
+            f"Sheet printer and {matching_sheet['name']} were selected automatically."
+        )
     else:
         st.session_state["printer_type_select"] = PRINTER_TYPE_LABEL
         st.session_state["page_format_select"] = LABEL_PRINTER_PAGE_FORMAT
+        st.session_state.pop("auto_sheet_stock_notice", None)
+
+
+def selected_label_preset_record():
+    """Resolve saved options even when Custom Size has changed display units."""
+    selected = st.session_state.get("preset_select")
+    for item in LABEL_PRESETS:
+        if any(selected == format_label_preset_option(item[0], item[1], item[2], units)
+               for units in (UNIT_MM, UNIT_INCH_FRACTIONAL, UNIT_INCH_DECIMAL)):
+            return item
+    return None
+
+
+def remembered_label_preset_record():
+    name = st.session_state.get("last_label_preset_name", TEMPLATE_DEFAULTS["last_label_preset_name"])
+    return next((item for item in LABEL_PRESETS if item[0] == name),
+                next(item for item in LABEL_PRESETS
+                     if item[0] == TEMPLATE_DEFAULTS["last_label_preset_name"]))
 
 
 def sync_label_size_mode():
-    if st.session_state.get("label_size_mode_select") != LABEL_SIZE_CUSTOM:
-        return
-
-    st.session_state["preset_select"] = "Custom"
-    st.session_state["printer_type_select"] = PRINTER_TYPE_LABEL
-    st.session_state["page_format_select"] = LABEL_PRINTER_PAGE_FORMAT
+    units = st.session_state.get("units_select", UNIT_MM)
+    if st.session_state.get("label_size_mode_select") == LABEL_SIZE_PRESET:
+        item = remembered_label_preset_record()
+        option = format_label_preset_option(item[0], item[1], item[2], units)
+        st.session_state["preset_select"] = option
+        sync_sheet_preset_from_label_preset({
+            option: (item[3], item[4], item[5] if len(item) > 5 else None)
+        })
+    else:
+        item = selected_label_preset_record()
+        if item:
+            st.session_state["last_label_preset_name"] = item[0]
+            apply_label_size_to_state(item[3], item[4])
+        st.session_state["preset_select"] = "Custom"
+        st.session_state["printer_type_select"] = PRINTER_TYPE_LABEL
+        st.session_state["page_format_select"] = LABEL_PRINTER_PAGE_FORMAT
+        st.session_state.pop("auto_sheet_stock_notice", None)
 
 
 def apply_sheet_preset_to_state(preset):
@@ -1821,6 +1869,9 @@ with st.sidebar.expander("Label Size", expanded=False):
         st.caption(
             f"Using {active_sheet_preset['name']} from Export Labels / PDF, so the exact label size is set from that sheet stock."
         )
+    auto_sheet_notice = st.session_state.get("auto_sheet_stock_notice")
+    if auto_sheet_notice:
+        st.info(auto_sheet_notice)
 
     if (
         "label_size_mode_select" not in st.session_state
@@ -1895,19 +1946,68 @@ with st.sidebar.expander("Label Size", expanded=False):
                                                 step=0.01, input_min=0.05, input_max=40.0, format="%.3f")
             label_width, label_height = label_width_in * 25.4, label_height_in * 25.4
     else:
-        ensure_choice("preset_select", preset_size_options, preset_size_options[0])
-        preset_widget_key = reset_layout_widget("preset_select")
-        preset = st.selectbox(
-            "Preset size",
-            preset_size_options,
-            index=preset_size_options.index(st.session_state["preset_select"]),
-            key=preset_widget_key,
-            help="Common label sizes for standard stock.",
-            on_change=sync_preset_select_widget,
-            args=(preset_widget_key, preset_dimension_lookup),
+        fallback_preset = selected_label_preset_record() or remembered_label_preset_record()
+        fallback_option = format_label_preset_option(
+            fallback_preset[0], fallback_preset[1], fallback_preset[2], units
         )
-        st.session_state["preset_select"] = preset
-        label_width, label_height = preset_dimension_lookup[preset][:2]
+        ensure_choice("preset_select", preset_size_options, fallback_option)
+        preset_records = dict(zip(preset_size_options, LABEL_PRESETS))
+        with st.popover("Browse presets", icon=":material/table_view:", width="stretch"):
+            st.markdown("**Find a label size**")
+            query = st.text_input(
+                "Search label presets",
+                placeholder="Zebra, 4x2, 101.6 x 50.8 mm…",
+                key="label_preset_search",
+                help="Search by brand, product number, or width × height. Sizes without units match inches or mm; fractions such as 2 1/4 x 1 1/4 also work.",
+            )
+            matches = [option for option in preset_size_options
+                       if label_preset_matches(preset_records[option], query)]
+            matches.sort(key=lambda option: (
+                option != st.session_state["preset_select"],
+                label_preset_table_row(preset_records[option])["Brand"].casefold(),
+                label_preset_table_row(preset_records[option])["Type"].casefold(),
+                preset_records[option][3],
+                preset_records[option][4],
+                preset_records[option][0].casefold(),
+            ))
+            st.caption(f"{len(matches)} of {len(preset_size_options)} presets · Width × height · Select a row to apply")
+            if matches:
+                # A changed result set gets fresh selection state so a row index
+                # from an earlier search can never select a different preset.
+                result_id = hashlib.sha256(json.dumps(matches).encode()).hexdigest()[:16]
+                table_key = layout_widget_key(f"label_preset_table_{result_id}")
+                st.dataframe(
+                    pd.DataFrame([label_preset_table_row(preset_records[option])
+                                  for option in matches]),
+                    hide_index=True,
+                    width=900,
+                    height=min(390, 38 + 35 * len(matches)),
+                    row_height=35,
+                    column_config={
+                        "Size (in)": st.column_config.TextColumn(width=150),
+                        "Size (mm)": st.column_config.TextColumn(width=130),
+                        "Brand": st.column_config.TextColumn(width=110),
+                        "Type": st.column_config.TextColumn(width=130),
+                        "Product / template": st.column_config.TextColumn(width=330),
+                    },
+                    key=table_key,
+                    selection_mode="single-row",
+                    on_select=lambda key=table_key, options=matches, lookup=preset_dimension_lookup: (
+                        sync_preset_table_selection(key, options, lookup)
+                    ),
+                )
+            else:
+                st.info("No matching presets. Try another size or brand, or choose Custom Size above.")
+            st.caption(f"Selected: {preset_records[st.session_state['preset_select']][0]}")
+        selected = preset_records[st.session_state["preset_select"]]
+        st.session_state["last_label_preset_name"] = selected[0]
+        label_width, label_height = selected[3:5]
+        selected_display = label_preset_table_row(selected)
+        st.markdown(f"**Selected: {selected[0]}**")
+        st.markdown(
+            f"**{selected_display['Size (in)']} in**  \n"
+            f"{selected_display['Size (mm)']} mm · Width × height"
+        )
 
 if active_sheet_preset:
     label_width = active_sheet_preset["label_width_mm"]
