@@ -7,6 +7,7 @@ import hashlib
 import pypdfium2 as pdfium
 
 from fractions import Fraction
+from row_selection import build_selection_table, selected_data
 
 from reportlab.lib.pagesizes import mm, A4, letter
 from reportlab.pdfgen import canvas
@@ -1732,23 +1733,24 @@ with filter_container:
         row_limited_df = active_df.iloc[row_range_start - 1:row_range_end].copy()
         filtered_df = apply_filter_rules(row_limited_df, filter_rules, filter_match_mode)
 
-    df_for_selection = filtered_df.copy()
-    df_for_selection.insert(0, "Row", [active_df.index.get_loc(idx) + 1 for idx in df_for_selection.index])
-    df_for_selection.insert(0, "Print", True)
+    df_for_selection, row_control_column, print_control_column = build_selection_table(active_df, filtered_df)
 
     with table_col:
         st.caption(f"{len(filtered_df)} of {len(active_df)} rows shown before manual selection.")
-        st.write("Check the **Print** box for rows you want to include in the PDF:")
+        st.write(f"Check the **{print_control_column}** box for rows you want to include in the PDF:")
         edited_df = st.data_editor(
             df_for_selection,
-            column_config={"Print": st.column_config.CheckboxColumn("Print", default=True)},
-            disabled=["Row"] + active_df.columns.tolist(),
+            column_config={
+                print_control_column: st.column_config.CheckboxColumn(print_control_column, default=True),
+                row_control_column: st.column_config.NumberColumn(row_control_column, help="Row number in the uploaded dataset."),
+            },
+            disabled=[row_control_column] + active_df.columns.tolist(),
             width="stretch",
             hide_index=True,
             key="editor"
         )
 
-    df_to_use = edited_df[edited_df["Print"] == True].drop(columns=["Print", "Row"])
+    df_to_use = selected_data(edited_df, row_control_column, print_control_column)
 
     if df_to_use.empty:
         st.warning("No rows selected for printing. Please filter or check boxes above.")
