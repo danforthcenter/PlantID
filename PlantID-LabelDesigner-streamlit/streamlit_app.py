@@ -17,7 +17,11 @@ from reportlab.graphics.barcode import code128
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
 from reportlab.pdfbase.pdfmetrics import stringWidth
+from wrap_tags import WRAP_DEFAULTS, wrap_config, wrap_layout_error, clip_region, draw_tear_off
+
 from label_presets import (
+    GEMPLERS_SHEET_NAME,
+    GEMPLERS_SOURCE,
     CUSTOM_SHEET_PRESET,
     LABEL_PRESETS,
     label_preset_matches,
@@ -80,6 +84,7 @@ HIGHLIGHT_COLOR_MAP = {
 }
 
 TEMPLATE_DEFAULTS = {
+    **WRAP_DEFAULTS,
     "split_column_enabled_check": False,
     "split_column_select": None,
     "split_primary_delimiter_input": "_",
@@ -444,10 +449,12 @@ def seed_layout_widget(key, default=None):
     return widget_key
 
 
-def reset_layout_widget(key):
+def sync_layout_widget(key):
+    # Explicitly send canonical settings to existing browser controls. Deleting
+    # their state only changes the default; the browser can send its old value
+    # back on the next edit and restore the previous sheet preset.
     widget_key = layout_widget_key(key)
-    if widget_key in st.session_state:
-        del st.session_state[widget_key]
+    st.session_state[widget_key] = st.session_state[key]
     return widget_key
 
 
@@ -458,6 +465,19 @@ def sync_layout_widget_value(key, widget_key):
 def sync_label_size_mode_widget(widget_key):
     sync_layout_widget_value("label_size_mode_select", widget_key)
     sync_label_size_mode()
+
+
+def configure_wrap_preset(sheet_name):
+    # Only apply stock defaults on an explicit preset change, never on reruns.
+    st.session_state["wrap_enabled_check"] = sheet_name == GEMPLERS_SHEET_NAME
+    if sheet_name == GEMPLERS_SHEET_NAME:
+        st.session_state["wrap_leader_mm_input"] = 101.6
+        st.session_state["wrap_tear_width_mm_input"] = 57.15
+
+
+def sync_sheet_stock_widget(widget_key):
+    sync_layout_widget_value("sheet_preset_select", widget_key)
+    configure_wrap_preset(st.session_state["sheet_preset_select"])
 
 
 def sync_preset_table_selection(widget_key, options, preset_lookup):
@@ -595,6 +615,7 @@ def find_sheet_preset_for_label_size(width_mm, height_mm, preferred_sheet_name=N
 def sync_sheet_preset_from_label_preset(preset_lookup):
     selected_preset = st.session_state.get("preset_select")
     dimensions = preset_lookup.get(selected_preset)
+    configure_wrap_preset(dimensions[2] if dimensions else None)
     if not dimensions:
         st.session_state["printer_type_select"] = PRINTER_TYPE_LABEL
         st.session_state["page_format_select"] = LABEL_PRINTER_PAGE_FORMAT
@@ -1046,7 +1067,19 @@ def draw_label_on_canvas(
     code_position="Left",
     barcode_text_position="Beside barcode",
     barcode_above_columns=None,
+    wrap_tag=None,
 ):
+    wrap_active = wrap_tag and wrap_tag["enabled"]
+    if wrap_active:
+        error = wrap_layout_error(wrap_tag, label_width, label_height)
+        if error:
+            raise ValueError(error)
+        tear_x = x + (label_width - wrap_tag["width"]) * mm
+        x += wrap_tag["leader"] * mm
+        label_width -= wrap_tag["leader"] + wrap_tag["width"]
+        c.saveState()
+        clip_region(c, x, y, label_width, label_height)
+
     def font_variant(base_font, variant):
         variants = {
             "Helvetica": {
@@ -1257,6 +1290,11 @@ def draw_label_on_canvas(
             c.drawString(draw_x, y_pos, val)
         c.restoreState()
 
+    if wrap_active:
+        c.restoreState()
+        draw_tear_off(c, df_row, tear_x, y, label_height, wrap_tag,
+                      font=label_font, labels=column_label_map, border=show_border)
+
 
 # ======================================================
 # Multi-label PDF sheet
@@ -1300,6 +1338,7 @@ def generate_sheet_direct(
     sheet_start_slot=1,
     barcode_text_position="Beside barcode",
     barcode_above_columns=None,
+    wrap_tag=None,
 ):
     if page_margin_top is None:
         page_margin_top = page_margin
@@ -1393,6 +1432,7 @@ def generate_sheet_direct(
                 code_position=code_position,
                 barcode_text_position=barcode_text_position,
                 barcode_above_columns=barcode_above_columns,
+                wrap_tag=wrap_tag,
             )
 
             x += label_width * mm + gap_horizontal
@@ -1885,11 +1925,10 @@ with st.sidebar.expander("Label Size", expanded=False):
         LABEL_SIZE_MODE_OPTIONS,
         TEMPLATE_DEFAULTS["label_size_mode_select"],
     )
-    label_size_mode_widget_key = reset_layout_widget("label_size_mode_select")
+    label_size_mode_widget_key = sync_layout_widget("label_size_mode_select")
     label_size_mode = st.radio(
         "Size source",
         LABEL_SIZE_MODE_OPTIONS,
-        index=LABEL_SIZE_MODE_OPTIONS.index(st.session_state["label_size_mode_select"]),
         horizontal=True,
         key=label_size_mode_widget_key,
         help="Use Custom Size for exact dimensions, or Preset size for common label formats.",
@@ -2240,6 +2279,70 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
                 column_label_overrides.pop(column, None)
         st.session_state["column_label_overrides"] = column_label_overrides
 
+# Independent fields on the detachable right-hand end of a wrap tag.
+# Preserve hidden controls when the feature or code type is toggled off.
+for key in WRAP_DEFAULTS:
+    if key in st.session_state:
+        st.session_state[key] = st.session_state[key]
+with st.sidebar.expander("Wrap tag / tear-off", expanded=False):
+    st.caption("Reserve a blank loop area on the left and print an independent identifier on the detachable right end.")
+    ensure_bool("wrap_enabled_check", False)
+    wrap_enabled = st.checkbox("Enable right-hand tear-off section", key="wrap_enabled_check")
+    if active_sheet_preset_name == GEMPLERS_SHEET_NAME:
+        st.caption("Gemplers: 11 × 1 in strips, eight per landscape Letter sheet; 2¼ in (57.15 mm) tear-off. Print at actual size / 100%.")
+        st.caption("The 101.6 mm blank loop area follows the supplier's main-text template. Adjust it to position content around your stock's lock cutouts.")
+        st.markdown(f"[Stock specifications and printable template]({GEMPLERS_SOURCE})")
+    if wrap_enabled:
+        for key, label, minimum, maximum in (
+            ("wrap_leader_mm_input", "Blank loop / lock area (mm)", 0.0, 1000.0),
+            ("wrap_tear_width_mm_input", "Right tear-off width (mm)", 1.0, 1000.0),
+            ("wrap_padding_mm_input", "Tear-off padding (mm)", 0.0, 20.0),
+        ):
+            ensure_float_range(key, WRAP_DEFAULTS[key], minimum, maximum)
+            st.number_input(label, min_value=minimum, max_value=maximum, step=0.5, key=key)
+        ensure_choice("wrap_code_type_select", ["None", "QR", "Barcode"], "QR")
+        tear_code_type = st.selectbox("Tear-off code type", ["None", "QR", "Barcode"], key="wrap_code_type_select")
+        if tear_code_type != "None":
+            ensure_bool("wrap_use_main_code_check", True)
+            use_main_code = st.checkbox("Use main tag code data", key="wrap_use_main_code_check")
+            if not use_main_code:
+                ensure_choice("wrap_code_column_select", _all_active_columns, default_code_column)
+                st.selectbox("Tear-off code data", _all_active_columns, key="wrap_code_column_select")
+            ensure_choice("wrap_code_position_select", ["Left", "Right"], "Left")
+            st.selectbox("Tear-off code position", ["Left", "Right"], key="wrap_code_position_select")
+            sizes = [("wrap_qr_size_mm_input", "Tear-off QR size (mm)")] if tear_code_type == "QR" else [
+                ("wrap_barcode_width_mm_input", "Tear-off barcode width (mm)"),
+                ("wrap_barcode_height_mm_input", "Tear-off barcode height (mm)"),
+            ]
+            for key, label in sizes:
+                ensure_float_range(key, WRAP_DEFAULTS[key], 1.0, 500.0)
+                st.number_input(label, min_value=1.0, max_value=500.0, step=0.5, key=key)
+        ensure_bool("wrap_custom_fields_check", False)
+        custom_tear_fields = st.checkbox("Customize tear-off fields", key="wrap_custom_fields_check",
+                                         help="By default the tear-off follows the main tag's displayed fields and their order.")
+        if custom_tear_fields:
+            key = "wrap_text_columns_multiselect"
+            if st.session_state.get(key) is None:
+                st.session_state[key] = list(visible_columns)
+            st.session_state[key] = [col for col in st.session_state[key] if col in _all_active_columns]
+            st.multiselect("Tear-off identifier fields", _all_active_columns, key=key,
+                           help="Choose fields independently of the main label. Leave empty for a code-only tab.")
+        else:
+            st.caption("Displayed fields match the main tag: " + (", ".join(visible_columns) or "No text fields"))
+        ensure_bool("wrap_show_names_check", True)
+        st.checkbox("Show field names on tear-off", key="wrap_show_names_check")
+        ensure_float_range("wrap_font_size_input", 7.0, 4.0, 36.0)
+        st.number_input("Tear-off font size (pt)", min_value=4.0, max_value=36.0, step=0.5, key="wrap_font_size_input")
+        st.caption("Identifier text wraps and shrinks to fit. The main label is confined to the space between the loop area and the tear-off.")
+
+tear_main_code_column = st.session_state.get("code_column_select", default_code_column)
+if tear_main_code_column not in _all_active_columns:
+    tear_main_code_column = default_code_column
+wrap_tag = wrap_config(st.session_state, visible_columns, tear_main_code_column)
+wrap_error = wrap_layout_error(wrap_tag, label_width, label_height)
+if wrap_error:
+    st.sidebar.error(wrap_error)
+
 with st.sidebar:
     st.divider()
     with st.container(border=True):
@@ -2297,7 +2400,7 @@ with summary_container:
     c2.metric("Filtered Rows", len(filtered_df))
     c3.metric("Data Source", st.session_state.data_source)
 
-    if not filtered_df.empty:
+    if not filtered_df.empty and not wrap_error:
         if not barcode_layout_fits:
             st.warning(
                 "The barcode and text exceed the space inside the label padding. "
@@ -2325,6 +2428,7 @@ with summary_container:
             code_position=code_position,
             barcode_text_position=barcode_text_position,
             barcode_above_columns=barcode_above_columns,
+            wrap_tag=wrap_tag,
         )
         c_prev.save()
         buffer.seek(0)
@@ -2343,11 +2447,10 @@ with export_container:
     )
 
     ensure_choice("printer_type_select", PRINTER_TYPE_OPTIONS, TEMPLATE_DEFAULTS["printer_type_select"])
-    printer_type_widget_key = reset_layout_widget("printer_type_select")
+    printer_type_widget_key = sync_layout_widget("printer_type_select")
     printer_type = st.radio(
         "Printer type",
         PRINTER_TYPE_OPTIONS,
-        index=PRINTER_TYPE_OPTIONS.index(st.session_state["printer_type_select"]),
         horizontal=True,
         key=printer_type_widget_key,
         on_change=sync_layout_widget_value,
@@ -2369,11 +2472,10 @@ with export_container:
         )
     else:
         ensure_choice("sheet_setup_select", SHEET_SETUP_OPTIONS, TEMPLATE_DEFAULTS["sheet_setup_select"])
-        sheet_setup_widget_key = reset_layout_widget("sheet_setup_select")
+        sheet_setup_widget_key = sync_layout_widget("sheet_setup_select")
         sheet_setup = st.radio(
             "Sheet setup",
             SHEET_SETUP_OPTIONS,
-            index=SHEET_SETUP_OPTIONS.index(st.session_state["sheet_setup_select"]),
             horizontal=True,
             key=sheet_setup_widget_key,
             on_change=sync_layout_widget_value,
@@ -2385,16 +2487,15 @@ with export_container:
         if sheet_setup == SHEET_SETUP_PRESET:
             sheet_preset_options = [preset["name"] for preset in SHEET_STOCK_PRESETS]
             ensure_choice("sheet_preset_select", sheet_preset_options, sheet_preset_options[0])
-            sheet_preset_widget_key = reset_layout_widget("sheet_preset_select")
+            sheet_preset_widget_key = sync_layout_widget("sheet_preset_select")
             sheet_preset_col, _sheet_preset_spacer = st.columns([2, 3])
             with sheet_preset_col:
                 sheet_preset_name = st.selectbox(
                     "Sheet stock preset",
                     sheet_preset_options,
-                    index=sheet_preset_options.index(st.session_state["sheet_preset_select"]),
                     key=sheet_preset_widget_key,
-                    on_change=sync_layout_widget_value,
-                    args=("sheet_preset_select", sheet_preset_widget_key),
+                    on_change=sync_sheet_stock_widget,
+                    args=(sheet_preset_widget_key,),
                     help="Choose a known tag/dot sheet to apply its measured label size, margins, and label spacing.",
                 )
             st.session_state["sheet_preset_select"] = sheet_preset_name
@@ -2533,6 +2634,8 @@ with export_container:
     if st.button("Generate Multi-Label PDF"):
         if df_to_use.empty:
             st.error("Cannot generate PDF: No rows selected.")
+        elif wrap_error:
+            st.error(f"Cannot generate PDF: {wrap_error}")
         elif not barcode_layout_fits:
             st.error("Cannot generate PDF: adjust the barcode and text layout to fit the label.")
         elif page_format in SHEET_PAGE_FORMAT_OPTIONS and labels_per_sheet == 0:
@@ -2555,6 +2658,7 @@ with export_container:
                 code_position=code_position,
                 barcode_text_position=barcode_text_position,
                 barcode_above_columns=barcode_above_columns,
+                wrap_tag=wrap_tag,
                 page_format=page_format,
                 page_margin_top=page_margin_top,
                 page_margin_right=page_margin_right,

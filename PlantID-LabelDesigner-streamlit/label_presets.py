@@ -8,6 +8,13 @@ UNIT_INCH_FRACTIONAL = "Imperial (inches)"
 UNIT_INCH_DECIMAL = "Imperial (inch decimal)"
 INCH_TO_MM = 25.4
 
+GEMPLERS_SHEET_NAME = "Gemplers 151062 Loop-Lock 11 x 1 in (1 x 8)"
+GEMPLERS_SOURCE = "https://gemplers.com/products/laser-strip-loop-lock-tags-11-quot-x-1-quot"
+# The linked manufacturer Word template uses landscape Letter, a 0.25-inch
+# top margin and eight rows at exactly 1-inch pitch. Full strips span the page;
+# its 4-inch left text margin is a printable-area inset, not a stock margin.
+GEMPLERS_TEMPLATE_SOURCE = "https://cdn.shopify.com/s/files/1/0073/1797/9225/files/Laser-Printable_Loop-Lock_Tag_Blank_Template.docx?v=1679587842"
+
 CUSTOM_SHEET_PRESET = "Custom sheet spacing"
 
 
@@ -54,6 +61,7 @@ def make_sheet_stock_preset(
 
 
 LABEL_PRESETS = [
+    ("Gemplers 151062 Laser Strip Loop-Lock Tag", 279.4, 25.4, 279.4, 25.4, GEMPLERS_SHEET_NAME),
     ("Cryovial", 25, 12, 25, 12),
     ("Small Label", 25, 67, 67, 25),
     ("Wristband Label", 25, 254, 254, 25),
@@ -446,7 +454,7 @@ GENERAL_PRESET_DETAILS = {
 def label_preset_brand(name):
     return next((brand for brand in (
         "USA Scientific", "Fisherbrand", "Brother", "LabTAG", "PR1MA",
-        "Zebra", "Avery", "DYMO", "Brady",
+        "Zebra", "Avery", "DYMO", "Brady", "Gemplers",
     ) if name.startswith(brand + " ")), "General")
 
 
@@ -574,6 +582,10 @@ def label_preset_matches(preset, query):
 
 
 SHEET_STOCK_PRESETS = [
+    make_sheet_stock_preset(
+        GEMPLERS_SHEET_NAME, 11, 1, 1, 8, 0.25, 0, 11, 1,
+        page_format="Letter Landscape",
+    ),
     {
         "name": "PR1MA 119 Tag Sheet (7 x 17)",
         "page_format": "Letter",
