@@ -8,7 +8,7 @@ import pypdfium2 as pdfium
 
 from fractions import Fraction
 from row_selection import build_selection_table, selected_data
-from data_loading import read_label_csv
+from data_loading import read_label_csv, read_label_table
 from layout_schema import (
     LABEL_PRINTER_PAGE_FORMAT,
     LABEL_SIZE_CUSTOM,
@@ -31,7 +31,7 @@ from reportlab.graphics.barcode import code128
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
 from reportlab.pdfbase.pdfmetrics import stringWidth
-from wrap_tags import WRAP_DEFAULTS, wrap_config, wrap_layout_error, clip_region, draw_tear_off
+from wrap_tags import QR_ERROR_CORRECTION, WRAP_DEFAULTS, wrap_config, wrap_layout_error, clip_region, draw_tear_off
 
 from label_presets import (
     GEMPLERS_SHEET_NAME,
@@ -54,22 +54,10 @@ if "df" not in st.session_state:
     st.session_state.df = None
 if "data_source" not in st.session_state:
     st.session_state.data_source = None
-if "start_selected_source" not in st.session_state:
-    st.session_state.start_selected_source = None
 if "loaded_template_metadata" not in st.session_state:
     st.session_state.loaded_template_metadata = None
-if "start_layout_source" not in st.session_state:
-    st.session_state.start_layout_source = None
-if "layout_uploader_key" not in st.session_state:
-    st.session_state.layout_uploader_key = 0
 if "layout_widget_generation" not in st.session_state:
     st.session_state.layout_widget_generation = 0
-if "start_screen" not in st.session_state:
-    st.session_state.start_screen = 1
-if "uploaded_csv_bytes" not in st.session_state:
-    st.session_state.uploaded_csv_bytes = None
-if "uploaded_csv_name" not in st.session_state:
-    st.session_state.uploaded_csv_name = None
 
 APP_NAME = "PlantID Label Designer"
 APP_VERSION = "0.10"
@@ -83,6 +71,11 @@ FILTER_MATCH_ALL = "Match all filters"
 FILTER_MATCH_ANY = "Match any filter"
 FILTER_MATCH_OPTIONS = [FILTER_MATCH_ALL, FILTER_MATCH_ANY]
 FILTER_OPERATOR_OPTIONS = ["Contains", "Does not contain", "Equals", "Is blank", "Is not blank"]
+
+ADVANCED_KEYS = [
+    "show_border_check", "qr_left_offset_slider", "col_name_width_ratio_slider",
+    "highlight_padding_slider", "sidebar_factor_slider",
+]
 
 HIGHLIGHT_COLOR_OPTIONS = ["Black", "White"]
 HIGHLIGHT_COLOR_MAP = {
@@ -151,20 +144,15 @@ TEMPLATE_DEFAULTS = {
 }
 PREFERRED_SPLIT_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID"]
 PREFERRED_CODE_COLUMNS = ["PlantID", "Plant_ID", "UID", "ID", "Barcode"]
-EXAMPLE_LAYOUTS = [
-    {
-        "button_label": "Use Label Printer Example",
-        "source_label": "Example label printer layout",
-        "success_message": "Using label printer example layout",
-        "filename": "example_layout.json",
-    },
-    {
-        "button_label": "Use Sheet Printer Example",
-        "source_label": "Example sheet printer layout",
-        "success_message": "Using sheet printer example layout",
-        "filename": "example_sheet_layout.json",
-    },
-]
+EXAMPLE_CSV_FILENAME = "PV1_metadata.csv"
+START_DATA_UPLOAD = "Upload a file"
+START_DATA_EXAMPLE = "Use the example dataset"
+START_LAYOUT_DEFAULT = "Start from defaults"
+START_LAYOUT_UPLOAD = "Load a saved layout"
+EXAMPLE_LAYOUTS = {
+    "Label printer example": "example_layout.json",
+    "Sheet printer example": "example_sheet_layout.json",
+}
 
 
 def clear_layout_settings_state():
@@ -190,21 +178,6 @@ def clear_layout_settings_state():
 def clear_layout_settings_state_if_requested():
     if st.session_state.pop("_clear_layout_settings_on_next_run", False):
         clear_layout_settings_state()
-
-
-def load_pending_example_template_if_requested():
-    filename = st.session_state.pop("_pending_example_template_filename", None)
-    if filename is None:
-        return
-
-    source_label = st.session_state.pop("_pending_example_template_source_label", None)
-    _, template_error = load_example_template(filename)
-    if template_error:
-        st.session_state.start_layout_source = None
-        st.session_state["_pending_template_error"] = template_error
-        return
-
-    st.session_state.start_layout_source = source_label
 
 
 def build_template_payload(label_width_mm=None, label_height_mm=None):
@@ -345,7 +318,7 @@ def load_example_template(filename):
 def render_version_footer():
     st.divider()
     loaded_template = st.session_state.get("loaded_template_metadata")
-    footer_text = f"{APP_NAME} v{APP_VERSION} | Template JSON schema v{TEMPLATE_VERSION}"
+    footer_text = f"{APP_NAME} v{APP_VERSION} | Layout schema v{TEMPLATE_VERSION}"
 
     st.caption(footer_text)
     st.caption(
@@ -357,10 +330,10 @@ def render_version_footer():
         return
 
     st.caption(
-        f"Loaded template: {loaded_template.get('filename', 'template.json')} "
+        f"Loaded layout: {loaded_template.get('filename', 'template.json')} "
         f"(saved with {loaded_template.get('app_name', APP_NAME)} "
         f"v{loaded_template.get('app_version', 'Not recorded')}, "
-        f"JSON schema v{loaded_template.get('template_version', 'Not recorded')})"
+        f"layout schema v{loaded_template.get('template_version', 'Not recorded')})"
     )
 
     version_notes = []
@@ -473,6 +446,7 @@ def sync_preset_table_selection(widget_key, options, preset_lookup):
     if not rows or not 0 <= rows[0] < len(options):
         return
     st.session_state["preset_select"] = options[rows[0]]
+    st.session_state["preset_browser_open"] = False
     sync_sheet_preset_from_label_preset(preset_lookup)
 
 
@@ -764,6 +738,26 @@ def overflow_message(fields, subject):
         parts.append("Text rows overlap because the font is taller than the row spacing.")
     return " ".join(parts) + (" Reduce the font size or padding, shorten or hide fields, "
                               "or increase the label size or row height factor.")
+
+
+# Phone cameras and 203 dpi printers need modules of about three dots.
+MIN_QR_MODULE_MM = 0.35
+
+
+def qr_module_warning(values, size_mm, name="QR code"):
+    """Warn when the longest value's QR modules are too small to scan reliably."""
+    longest = max((str(value) for value in values), key=len, default=None)
+    if longest is None or size_mm <= 0:
+        return None
+    widget = qr.QrCodeWidget(longest, barLevel=QR_ERROR_CORRECTION)
+    widget.qr.make()
+    modules = widget.qr.getModuleCount() + 2 * widget.barBorder
+    module_mm = size_mm / modules
+    if module_mm < MIN_QR_MODULE_MM:
+        return (f"The {name}'s squares are {module_mm:.2f} mm for the longest value, which phone cameras "
+                f"and 203 dpi label printers may not handle reliably. Use a size of at least "
+                f"{modules * MIN_QR_MODULE_MM:.0f} mm or shorter code values.")
+    return None
 
 
 def barcode_bar_warning(values, width_mm, name="barcode"):
@@ -1222,7 +1216,7 @@ def draw_label_on_canvas(
         if code_type == "QR":
             qr_pt = qr_size * mm
             code_y = y + (lh_pt - qr_pt) / 2
-            qrobj = qr.QrCodeWidget(val)
+            qrobj = qr.QrCodeWidget(val, barLevel=QR_ERROR_CORRECTION)
             b = qrobj.getBounds()
             scale = qr_pt / max(b[2] - b[0], b[3] - b[1])
             d = Drawing(qr_pt, qr_pt, transform=[scale, 0, 0, scale, 0, 0])
@@ -1492,166 +1486,133 @@ def generate_sheet_direct(
     return buffer
 
 
+def pdf_page_png(pdf_bytes, scale):
+    image = pdfium.PdfDocument(pdf_bytes)[0].render(scale=scale).to_pil()
+    png = io.BytesIO()
+    image.save(png, format="PNG")
+    return png.getvalue()
+
+
+def widest_rows(df, columns, font, font_size):
+    """The rows holding each column's widest value: if these fit, every row fits."""
+    indexes = []
+    for column in columns:
+        widths = df[column].astype(str).map(lambda value: stringWidth(value, font, font_size))
+        if len(widths):
+            indexes.append(widths.idxmax())
+    return df.loc[list(dict.fromkeys(indexes))]
+
+
+def find_overflow(df, design):
+    """Fields that do not fit on some label, checked without building the PDF."""
+    found = set()
+    scratch = canvas.Canvas(io.BytesIO(), pagesize=(design["label_width"] * mm, design["label_height"] * mm))
+    for _, row in widest_rows(df, design["visible_columns"], design["label_font"],
+                              design["label_font_size"]).iterrows():
+        draw_label_on_canvas(scratch, row, 0, 0, overflow=found, **design)
+    return found
+
+
+def alignment_test_pdf(design, sheet, labels_per_sheet):
+    """One sheet of numbered, outlined label positions for checking printer alignment."""
+    positions = pd.DataFrame({"Position": [str(i) for i in range(1, labels_per_sheet + 1)]})
+    font_size = max(5, min(24, design["label_height"] * 0.35 / 0.3528 - 2 * design["padding"]))
+    test_design = {**design, "visible_columns": ["Position"], "code_column": None, "code_type": "None",
+                   "highlight_column": None, "side_highlight": False, "show_border": True,
+                   "show_column_names": False, "label_font_size": font_size, "wrap_tag": None,
+                   "column_label_map": {}}
+    return generate_sheet_direct(positions, **test_design, **sheet, sheet_start_slot=1).getvalue()
+
+
 # ======================================================
 # Streamlit UI
 # ======================================================
 st.set_page_config(layout="wide")
 st.title(APP_NAME)
 clear_layout_settings_state_if_requested()
-load_pending_example_template_if_requested()
 
 # ======================
 # Start page
 # ======================
 if st.session_state.df is None:
-    example_csv_path = os.path.join(os.path.dirname(__file__), "PV1_metadata.csv")
+    st.write(
+        "PlantID Label Designer generates customizable plant sample labels from a spreadsheet. "
+        "Each row becomes a label: choose which columns appear as text, and optionally encode any "
+        "field as a QR code or barcode. Labels can be sized for label printers or sheet stock, "
+        "then exported as a PDF."
+    )
 
-    if st.session_state.start_screen == 1:
-        st.write(
-            "PlantID Label Designer generates customizable plant sample labels from a spreadsheet file. "
-            "Each row in your spreadsheet becomes a label, choose which columns appear as text, and "
-            "optionally encode any field as a QR code or barcode. "
-            "Labels can be sized for standard label stock or sheet paper, then exported as a PDF."
+    st.subheader("1. Choose your data")
+    data_choice = st.radio(
+        "Data source", [START_DATA_UPLOAD, START_DATA_EXAMPLE],
+        horizontal=True, key="start_data_choice", label_visibility="collapsed",
+    )
+    start_df, data_error, data_source = None, None, None
+    if data_choice == START_DATA_UPLOAD:
+        data_file = st.file_uploader(
+            "Upload a CSV or Excel (.xlsx) file", type=["csv", "xlsx"], key="start_data_file",
+            help="One row per plant or sample, with any column names — for example PlantID, "
+                 "Genotype, Treatment, Rep. Excel files use the first sheet.",
+        )
+        if data_file is not None:
+            start_df, data_error = read_label_table(data_file.getvalue(), data_file.name)
+            data_source = data_file.name
+    else:
+        with open(os.path.join(os.path.dirname(__file__), EXAMPLE_CSV_FILENAME), "rb") as example_csv:
+            start_df, data_error = read_label_csv(example_csv.read())
+        data_source = "Example dataset"
+
+    if data_error:
+        st.error(data_error)
+    elif start_df is not None:
+        columns_text = ", ".join(start_df.columns[:8]) + (", …" if len(start_df.columns) > 8 else "")
+        st.success(f"{len(start_df)} rows · columns: {columns_text}")
+    with open(os.path.join(os.path.dirname(__file__), EXAMPLE_CSV_FILENAME), "rb") as example_csv:
+        st.download_button(
+            "Download example CSV", data=example_csv.read(), file_name=EXAMPLE_CSV_FILENAME,
+            mime="text/csv", key="download_example_csv_btn", on_click="ignore",
+            help="A sample phenotyping dataset to use as a template for your own experiment.",
         )
 
-        # ---- Step 1: CSV ----
-        st.subheader("Step 1: Select a Plant Label CSV")
-        st.caption(
-            "Your CSV should have one row per plant/sample and any number of columns — "
-            "for example: PlantID, Genotype, Treatment, PlantNumber. "
-            "There are no required column names."
-        )
-        uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"], label_visibility="visible")
-        st.caption(
-            "Use **example CSV** to try the tool with a sample phenotyping dataset, or upload your own. "
-            "Download the example CSV first if you want a ready-made template to adapt for your own experiment."
-        )
+    st.subheader("2. Choose a label design")
+    st.caption(
+        "Every setting can be changed in the designer. Save your design there as a layout file "
+        "to reuse it with other datasets."
+    )
+    layout_choice = st.radio(
+        "Label design", [START_LAYOUT_DEFAULT, *EXAMPLE_LAYOUTS, START_LAYOUT_UPLOAD],
+        horizontal=True, key="start_layout_choice", label_visibility="collapsed",
+    )
+    layout_payload, layout_name, layout_error = None, None, None
+    if layout_choice == START_LAYOUT_UPLOAD:
+        layout_file = st.file_uploader("Upload a layout JSON file", type=["json"], key="start_layout_file")
+        if layout_file is not None:
+            layout_name = layout_file.name
+            try:
+                layout_payload = json.loads(layout_file.getvalue().decode("utf-8"))
+                layout_error = read_layout_file(layout_payload)[2]
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                layout_error = f"Could not read the layout file: {exc}"
+            if layout_error:
+                st.error(layout_error)
 
-        csv_btn_col, csv_dl_col, _csv_spacer = st.columns([1, 1, 6], gap="small")
-        with csv_btn_col:
-            if st.button("Use example CSV", key="use_default_csv_btn", width="stretch"):
-                st.session_state.start_selected_source = "Example dataset"
-        with csv_dl_col:
-            if os.path.exists(example_csv_path):
-                with open(example_csv_path, "rb") as _f:
-                    st.download_button(
-                        "Download example CSV",
-                        data=_f.read(),
-                        file_name="PV1_metadata.csv",
-                        mime="text/csv",
-                        key="download_example_csv_btn",
-                        width="stretch",
-                    )
-
-        if uploaded_file is not None:
-            st.session_state.start_selected_source = "Uploaded CSV"
-        elif st.session_state.start_selected_source == "Uploaded CSV":
-            st.session_state.start_selected_source = None
-
-        if st.session_state.start_selected_source == "Uploaded CSV" and uploaded_file is not None:
-            st.success(f"Loaded data: Uploaded CSV ({uploaded_file.name})")
-        elif st.session_state.start_selected_source == "Example dataset":
-            st.success("Loaded data: Example file (PV1_metadata.csv)")
-
-        csv_ready = st.session_state.start_selected_source is not None
-        if st.button("Next →", key="start_next_btn", disabled=not csv_ready):
-            if st.session_state.start_selected_source == "Uploaded CSV" and uploaded_file is not None:
-                csv_bytes = uploaded_file.getvalue()
-                _, csv_error = read_label_csv(csv_bytes)
-                if csv_error:
-                    st.error(csv_error)
-                else:
-                    st.session_state.uploaded_csv_bytes = csv_bytes
-                    st.session_state.uploaded_csv_name = uploaded_file.name
-                    st.session_state.start_screen = 2
-                    st.rerun()
-            elif st.session_state.start_selected_source == "Example dataset":
-                st.session_state.start_screen = 2
-                st.rerun()
-
-    elif st.session_state.start_screen == 2:
-        # ---- Step 2: Layout ----
-        st.subheader("Step 2: Select a Plant Label Design")
-        st.caption(
-            "The layout defines how your labels look — "
-            "physical size, which columns appear, font, spacing, and whether to include a QR code or barcode. "
-            "All settings can be freely adjusted on the designer page after opening. "
-            "Save your layout as a JSON file at any time and reload it here to reuse it across experiments."
-        )
-
-        template_file = st.file_uploader(
-            "Upload a layout JSON file",
-            type=["json"],
-            key=f"start_template_file_{st.session_state.layout_uploader_key}",
-        )
-        if template_file is not None:
-            _, template_error = load_template_payload(template_file)
-            if template_error:
-                st.error(template_error)
-            else:
-                st.session_state.start_layout_source = "Uploaded layout"
-                st.success(f"Loaded layout: {template_file.name}")
-        elif st.session_state.start_layout_source == "Uploaded layout":
-            st.session_state.start_layout_source = None
-
-        example_cols = st.columns([1, 1, 4], gap="small")
-        for example_col, example_layout in zip(example_cols, EXAMPLE_LAYOUTS):
-            with example_col:
-                if st.button(
-                    example_layout["button_label"],
-                    key=f"use_{example_layout['filename']}_btn",
-                    width="stretch",
-                ):
-                    st.session_state["_pending_example_template_filename"] = example_layout["filename"]
-                    st.session_state["_pending_example_template_source_label"] = example_layout["source_label"]
-                    st.session_state.layout_uploader_key += 1
-                    st.rerun()
-
-        pending_template_error = st.session_state.pop("_pending_template_error", None)
-        if pending_template_error:
-            st.error(pending_template_error)
-
-        selected_example = next(
-            (
-                example_layout
-                for example_layout in EXAMPLE_LAYOUTS
-                if st.session_state.start_layout_source == example_layout["source_label"]
-            ),
-            None,
-        )
-        if selected_example is not None:
-            st.success(selected_example["success_message"])
-
-        layout_ready = st.session_state.start_layout_source is not None
-        _nav_back_col, _nav_go_col, _nav_spacer = st.columns([1, 2, 5], gap="small")
-        with _nav_back_col:
-            if st.button("← Back", key="start_back_btn", width="stretch"):
-                st.session_state.start_screen = 1
-                st.session_state.start_layout_source = None
-                st.rerun()
-        with _nav_go_col:
-            if st.button("Open Label Designer →", key="start_go_btn", disabled=not layout_ready, width="stretch"):
-                if st.session_state.start_selected_source == "Example dataset":
-                    if os.path.exists(example_csv_path):
-                        with open(example_csv_path, "rb") as example_csv:
-                            st.session_state.df, _ = read_label_csv(example_csv.read())
-                    else:
-                        st.session_state.df = pd.DataFrame({
-                            "ID": ["P001", "P002", "P003", "P004"],
-                            "Species": ["Arabidopsis", "Arabidopsis", "Wheat", "Maize"],
-                            "Genotype": ["Col-0", "Ler", "Bobwhite", "B73"],
-                            "Treatment": ["Control", "Salt", "Control", "Drought"]
-                        })
-                    st.session_state.data_source = "Example dataset"
-                    st.session_state.scroll_to_top = True
-                    st.rerun()
-                elif st.session_state.start_selected_source == "Uploaded CSV" and st.session_state.uploaded_csv_bytes is not None:
-                    st.session_state.df, _ = read_label_csv(st.session_state.uploaded_csv_bytes)
-                    st.session_state.data_source = "Uploaded CSV"
-                    st.session_state.scroll_to_top = True
-                    st.rerun()
-                else:
-                    st.error("Something went wrong. Please restart and try again.")
+    ready = start_df is not None and (
+        layout_choice != START_LAYOUT_UPLOAD or (layout_payload is not None and not layout_error)
+    )
+    if st.button("Open Label Designer →", key="start_go_btn", type="primary", disabled=not ready):
+        if layout_choice == START_LAYOUT_UPLOAD:
+            _, layout_error = apply_template_payload(layout_payload, filename=layout_name)
+        elif layout_choice in EXAMPLE_LAYOUTS:
+            _, layout_error = load_example_template(EXAMPLE_LAYOUTS[layout_choice])
+        else:
+            clear_layout_settings_state()
+        if layout_error:
+            st.error(layout_error)
+        else:
+            st.session_state.df = start_df
+            st.session_state.data_source = data_source
+            st.session_state.scroll_to_top = True
+            st.rerun()
 
     render_version_footer()
     st.stop()
@@ -1858,6 +1819,15 @@ if (
 if active_sheet_preset:
     apply_sheet_preset_to_state(active_sheet_preset)
 
+# Advanced settings are hidden by default; their saved values still apply.
+# Re-assigning keeps a hidden widget's value, which Streamlit would otherwise drop.
+for key in ADVANCED_KEYS:
+    if key in st.session_state:
+        st.session_state[key] = st.session_state[key]
+# The toggle is drawn below the sections; its state from the last interaction
+# decides which controls they show.
+show_advanced = st.session_state.get("show_advanced_toggle", False)
+
 # 1. Data Fields
 with st.sidebar.expander("Data Fields", expanded=True):
     st.caption(
@@ -1951,6 +1921,64 @@ with st.sidebar.expander("Data Fields", expanded=True):
         help="How many times each record will be printed.",
     )
 
+def close_preset_browser():
+    st.session_state["preset_browser_open"] = False
+
+
+# A dialog opens centred with its top in view, so the search box is always
+# visible; the old popover could open above the top of short windows.
+@st.dialog("Find a label size", width="large", on_dismiss=close_preset_browser)
+def preset_browser(preset_size_options, preset_records, preset_dimension_lookup):
+    query = st.text_input(
+        "Search label presets",
+        placeholder="Zebra, 4x2, 101.6 x 50.8 mm…",
+        key="label_preset_search",
+        help="Search by brand, product number, or width × height. Sizes without units match inches or mm; fractions such as 2 1/4 x 1 1/4 also work.",
+    )
+    matches = [option for option in preset_size_options
+               if label_preset_matches(preset_records[option], query)]
+    matches.sort(key=lambda option: (
+        option != st.session_state["preset_select"],
+        label_preset_table_row(preset_records[option])["Brand"].casefold(),
+        label_preset_table_row(preset_records[option])["Type"].casefold(),
+        preset_records[option][3],
+        preset_records[option][4],
+        preset_records[option][0].casefold(),
+    ))
+    st.caption(f"{len(matches)} of {len(preset_size_options)} presets · Width × height · Select a row to apply")
+    if matches:
+        # A changed result set gets fresh selection state so a row index
+        # from an earlier search can never select a different preset.
+        result_id = hashlib.sha256(json.dumps(matches).encode()).hexdigest()[:16]
+        table_key = layout_widget_key(f"label_preset_table_{result_id}")
+        st.dataframe(
+            pd.DataFrame([label_preset_table_row(preset_records[option])
+                          for option in matches]),
+            hide_index=True,
+            width=900,
+            # Short enough that the dialog fits a laptop screen; the table scrolls.
+            height=min(318, 38 + 35 * len(matches)),
+            row_height=35,
+            column_config={
+                "Size (in)": st.column_config.TextColumn(width=150),
+                "Size (mm)": st.column_config.TextColumn(width=130),
+                "Brand": st.column_config.TextColumn(width=110),
+                "Type": st.column_config.TextColumn(width=130),
+                "Product / template": st.column_config.TextColumn(width=330),
+            },
+            key=table_key,
+            selection_mode="single-row",
+            on_select=lambda key=table_key, options=matches, lookup=preset_dimension_lookup: (
+                sync_preset_table_selection(key, options, lookup)
+            ),
+        )
+    else:
+        st.info("No matching presets. Try another size or brand, or choose Custom Size in the sidebar.")
+    st.caption(f"Selected: {preset_records[st.session_state['preset_select']][0]}")
+    if not st.session_state.get("preset_browser_open"):
+        st.rerun()  # A preset was chosen: close and apply it to the whole app.
+
+
 # 2. Label Size
 with st.sidebar.expander("Label Size", expanded=False):
     st.caption(
@@ -2042,53 +2070,9 @@ with st.sidebar.expander("Label Size", expanded=False):
         )
         ensure_choice("preset_select", preset_size_options, fallback_option)
         preset_records = dict(zip(preset_size_options, LABEL_PRESETS))
-        with st.popover("Browse presets", icon=":material/table_view:", width="stretch"):
-            st.markdown("**Find a label size**")
-            query = st.text_input(
-                "Search label presets",
-                placeholder="Zebra, 4x2, 101.6 x 50.8 mm…",
-                key="label_preset_search",
-                help="Search by brand, product number, or width × height. Sizes without units match inches or mm; fractions such as 2 1/4 x 1 1/4 also work.",
-            )
-            matches = [option for option in preset_size_options
-                       if label_preset_matches(preset_records[option], query)]
-            matches.sort(key=lambda option: (
-                option != st.session_state["preset_select"],
-                label_preset_table_row(preset_records[option])["Brand"].casefold(),
-                label_preset_table_row(preset_records[option])["Type"].casefold(),
-                preset_records[option][3],
-                preset_records[option][4],
-                preset_records[option][0].casefold(),
-            ))
-            st.caption(f"{len(matches)} of {len(preset_size_options)} presets · Width × height · Select a row to apply")
-            if matches:
-                # A changed result set gets fresh selection state so a row index
-                # from an earlier search can never select a different preset.
-                result_id = hashlib.sha256(json.dumps(matches).encode()).hexdigest()[:16]
-                table_key = layout_widget_key(f"label_preset_table_{result_id}")
-                st.dataframe(
-                    pd.DataFrame([label_preset_table_row(preset_records[option])
-                                  for option in matches]),
-                    hide_index=True,
-                    width=900,
-                    height=min(390, 38 + 35 * len(matches)),
-                    row_height=35,
-                    column_config={
-                        "Size (in)": st.column_config.TextColumn(width=150),
-                        "Size (mm)": st.column_config.TextColumn(width=130),
-                        "Brand": st.column_config.TextColumn(width=110),
-                        "Type": st.column_config.TextColumn(width=130),
-                        "Product / template": st.column_config.TextColumn(width=330),
-                    },
-                    key=table_key,
-                    selection_mode="single-row",
-                    on_select=lambda key=table_key, options=matches, lookup=preset_dimension_lookup: (
-                        sync_preset_table_selection(key, options, lookup)
-                    ),
-                )
-            else:
-                st.info("No matching presets. Try another size or brand, or choose Custom Size above.")
-            st.caption(f"Selected: {preset_records[st.session_state['preset_select']][0]}")
+        if st.button("Browse presets", icon=":material/table_view:", width="stretch",
+                     key="browse_presets_btn"):
+            st.session_state["preset_browser_open"] = True
         selected = preset_records[st.session_state["preset_select"]]
         st.session_state["last_label_preset_name"] = selected[0]
         label_width, label_height = selected[3:5]
@@ -2098,6 +2082,9 @@ with st.sidebar.expander("Label Size", expanded=False):
             f"**{selected_display['Size (in)']} in**  \n"
             f"{selected_display['Size (mm)']} mm · Width × height"
         )
+
+if label_size_mode == LABEL_SIZE_PRESET and st.session_state.get("preset_browser_open"):
+    preset_browser(preset_size_options, preset_records, preset_dimension_lookup)
 
 if active_sheet_preset:
     label_width = active_sheet_preset["label_width_mm"]
@@ -2150,6 +2137,9 @@ with st.sidebar.expander("Code Settings", expanded=False):
                 step=1, input_min=1, input_max=500,
                 help="Side length of the QR code square. Larger codes are easier to scan from a distance but take more label space.")
             barcode_width = barcode_height = 0
+            module_warning = qr_module_warning(df_to_use[code_column], qr_size)
+            if module_warning:
+                st.warning(module_warning)
         else:
             text_position_options = ["Beside barcode", "Above barcode", "Below barcode", "Above and below barcode"]
             ensure_choice("barcode_text_position_select", text_position_options, "Beside barcode")
@@ -2190,8 +2180,10 @@ with st.sidebar.expander("Code Settings", expanded=False):
 
         max_qr_left_offset = max(1, int(label_width / 2))
         ensure_int_range("qr_left_offset_slider", TEMPLATE_DEFAULTS["qr_left_offset_slider"], 0, max_qr_left_offset)
-        qr_left_offset = st.slider("Code offset from edge (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider",
-            help="Nudge the code inward from the label edge — useful if the code is being clipped by the label border or printer margin.")
+        qr_left_offset = st.session_state["qr_left_offset_slider"]
+        if show_advanced:
+            qr_left_offset = st.slider("Code offset from edge (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider",
+                help="Nudge the code inward from the label edge — useful if the code is being clipped by the label border or printer margin.")
     else:
         code_type = "None"
         code_column = None
@@ -2205,11 +2197,16 @@ with st.sidebar.expander("Code Settings", expanded=False):
 # 4. Design & Aesthetics
 with st.sidebar.expander("Design & Aesthetics", expanded=False):
     st.caption(
-        "Fine-tune the visual appearance of each label."
+        "Adjust the appearance of each label. Turn on **Show advanced settings** at the bottom "
+        "of the sidebar sections for the label border, spacing, and offset adjustments."
     )
     ensure_bool("show_border_check", TEMPLATE_DEFAULTS["show_border_check"])
-    show_border = st.checkbox("Show label border", key="show_border_check",
-        help="Draw a thin border around the edge of each label. Useful for cutting guidance on sheet printouts.")
+    show_border = st.session_state["show_border_check"]
+    if show_advanced:
+        show_border = st.checkbox("Show label border", key="show_border_check",
+            help="Draw a thin grey border around each label. Useful as a cutting guide on plain paper; "
+                 "turn it off for die-cut labels, where a slightly misaligned printer would print it "
+                 "on the visible label.")
 
     ensure_bool("show_column_names_check", TEMPLATE_DEFAULTS["show_column_names_check"])
     show_column_names_widget_key = seed_layout_widget(
@@ -2223,15 +2220,17 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
     st.session_state["show_column_names_check"] = show_column_names
 
     ensure_float_range("row_height_factor_slider", TEMPLATE_DEFAULTS["row_height_factor_slider"], 0.1, 1.5)
-    row_height_factor_widget_key = seed_layout_widget(
-        "row_height_factor_slider",
-        st.session_state["row_height_factor_slider"],
-    )
-    row_height_factor = st.slider("Row height factor", 0.1, 1.5, key=row_height_factor_widget_key,
-        on_change=sync_layout_widget_value,
-        args=("row_height_factor_slider", row_height_factor_widget_key),
-        help="Controls line spacing between text rows. Lower values pack more lines in; higher values give more breathing room.")
-    st.session_state["row_height_factor_slider"] = row_height_factor
+    row_height_factor = st.session_state["row_height_factor_slider"]
+    if show_advanced:
+        row_height_factor_widget_key = seed_layout_widget(
+            "row_height_factor_slider",
+            st.session_state["row_height_factor_slider"],
+        )
+        row_height_factor = st.slider("Row height factor", 0.1, 1.5, key=row_height_factor_widget_key,
+            on_change=sync_layout_widget_value,
+            args=("row_height_factor_slider", row_height_factor_widget_key),
+            help="Controls line spacing between text rows. Lower values pack more lines in; higher values give more breathing room.")
+        st.session_state["row_height_factor_slider"] = row_height_factor
 
     ensure_int_range("label_padding_slider", TEMPLATE_DEFAULTS["label_padding_slider"], 0, 15)
     label_padding_widget_key = seed_layout_widget(
@@ -2246,26 +2245,27 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
     )
     st.session_state["label_padding_slider"] = label_padding
 
-    if show_column_names:
-        ensure_int_range("col_name_width_ratio_slider", TEMPLATE_DEFAULTS["col_name_width_ratio_slider"], 0, 60)
+    ensure_int_range("col_name_width_ratio_slider", TEMPLATE_DEFAULTS["col_name_width_ratio_slider"], 0, 60)
+    col_name_width_ratio = st.session_state["col_name_width_ratio_slider"] / 100.0
+    if show_advanced and show_column_names:
         col_name_width_ratio = st.slider(
             "Column name width (%)", 0, 60, key="col_name_width_ratio_slider",
             help="Percentage of text area reserved for column name labels.",
         ) / 100.0
-    else:
-        col_name_width_ratio = TEMPLATE_DEFAULTS["col_name_width_ratio_slider"] / 100.0
 
     max_text_left_offset = max(1, int(label_width / 2))
     ensure_int_range("text_left_offset_slider", TEMPLATE_DEFAULTS["text_left_offset_slider"], 0, max_text_left_offset)
-    text_left_offset_widget_key = seed_layout_widget(
-        "text_left_offset_slider",
-        st.session_state["text_left_offset_slider"],
-    )
-    text_left_offset = st.slider("Text left offset (mm)", 0, max_text_left_offset, key=text_left_offset_widget_key,
-        on_change=sync_layout_widget_value,
-        args=("text_left_offset_slider", text_left_offset_widget_key),
-        help="Shift the text block inward from the left edge. Useful when the code is on the left and overlaps the text.")
-    st.session_state["text_left_offset_slider"] = text_left_offset
+    text_left_offset = st.session_state["text_left_offset_slider"]
+    if show_advanced:
+        text_left_offset_widget_key = seed_layout_widget(
+            "text_left_offset_slider",
+            st.session_state["text_left_offset_slider"],
+        )
+        text_left_offset = st.slider("Text left offset (mm)", 0, max_text_left_offset, key=text_left_offset_widget_key,
+            on_change=sync_layout_widget_value,
+            args=("text_left_offset_slider", text_left_offset_widget_key),
+            help="Shift the text block inward from the left edge. Useful when the code is on the left and overlaps the text.")
+        st.session_state["text_left_offset_slider"] = text_left_offset
 
     label_font_options = ["Helvetica", "Times-Roman", "Courier"]
     ensure_choice("label_font_select", label_font_options, TEMPLATE_DEFAULTS["label_font_select"])
@@ -2293,8 +2293,10 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 
         ensure_int_range("highlight_padding_slider", TEMPLATE_DEFAULTS["highlight_padding_slider"], 0, 20)
         ensure_bool("side_highlight_check", TEMPLATE_DEFAULTS["side_highlight_check"])
-        highlight_padding = st.slider("Highlight padding (pt)", 0, 20, key="highlight_padding_slider",
-            help="Extra width, in points, added to the box behind the highlighted value.")
+        highlight_padding = st.session_state["highlight_padding_slider"]
+        if show_advanced:
+            highlight_padding = st.slider("Highlight padding (pt)", 0, 20, key="highlight_padding_slider",
+                help="Extra width, in points, added to the box behind the highlighted value.")
         side_highlight = st.checkbox("Side strip highlight", key="side_highlight_check",
             help="Also print the highlighted field vertically in a strip down the left edge of the label.")
     else:
@@ -2304,8 +2306,10 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 
     if side_highlight:
         ensure_float_range("sidebar_factor_slider", TEMPLATE_DEFAULTS["sidebar_factor_slider"], 0.05, 0.5)
-        sidebar_factor = st.slider("Sidebar width factor", 0.05, 0.5, key="sidebar_factor_slider",
-            help="Width of the side strip as a fraction of the total label width, e.g. 0.1 = 10%.")
+        sidebar_factor = st.session_state["sidebar_factor_slider"]
+        if show_advanced:
+            sidebar_factor = st.slider("Sidebar width factor", 0.05, 0.5, key="sidebar_factor_slider",
+                help="Width of the side strip as a fraction of the total label width, e.g. 0.1 = 10%.")
     else:
         sidebar_factor = 0
 
@@ -2336,64 +2340,77 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 for key in WRAP_DEFAULTS:
     if key in st.session_state:
         st.session_state[key] = st.session_state[key]
-with st.sidebar.expander("Wrap tag / tear-off", expanded=False):
-    st.caption("Reserve a blank loop area on the left and print an independent identifier on the detachable right end.")
-    ensure_bool("wrap_enabled_check", False)
-    wrap_enabled = st.checkbox("Enable right-hand tear-off section", key="wrap_enabled_check")
-    if active_sheet_preset_name == GEMPLERS_SHEET_NAME:
-        st.caption("Gemplers: 11 × 1 in strips, eight per landscape Letter sheet; 2¼ in (57.15 mm) tear-off. Print at actual size / 100%.")
-        st.caption("The 101.6 mm blank loop area follows the supplier's main-text template. Adjust it to position content around your stock's lock cutouts.")
-        st.markdown(f"[Stock specifications and printable template]({GEMPLERS_SOURCE})")
-    if wrap_enabled:
-        for key, label, minimum, maximum in (
-            ("wrap_leader_mm_input", "Blank loop / lock area (mm)", 0.0, 1000.0),
-            ("wrap_tear_width_mm_input", "Right tear-off width (mm)", 1.0, 1000.0),
-            ("wrap_padding_mm_input", "Tear-off padding (mm)", 0.0, 20.0),
-        ):
-            ensure_float_range(key, WRAP_DEFAULTS[key], minimum, maximum)
-            st.number_input(label, min_value=minimum, max_value=maximum, step=0.5, key=key)
-        ensure_choice("wrap_code_type_select", ["None", "QR", "Barcode"], "QR")
-        tear_code_type = st.selectbox("Tear-off code type", ["None", "QR", "Barcode"], key="wrap_code_type_select")
-        if tear_code_type != "None":
-            ensure_bool("wrap_use_main_code_check", True)
-            use_main_code = st.checkbox("Use main tag code data", key="wrap_use_main_code_check")
-            if not use_main_code:
-                ensure_choice("wrap_code_column_select", _all_active_columns, default_code_column)
-                st.selectbox("Tear-off code data", _all_active_columns, key="wrap_code_column_select")
-            ensure_choice("wrap_code_position_select", ["Left", "Right"], "Left")
-            st.selectbox("Tear-off code position", ["Left", "Right"], key="wrap_code_position_select")
-            sizes = [("wrap_qr_size_mm_input", "Tear-off QR size (mm)")] if tear_code_type == "QR" else [
-                ("wrap_barcode_width_mm_input", "Tear-off barcode width (mm)"),
-                ("wrap_barcode_height_mm_input", "Tear-off barcode height (mm)"),
-            ]
-            for key, label in sizes:
-                ensure_float_range(key, WRAP_DEFAULTS[key], 1.0, 500.0)
-                st.number_input(label, min_value=1.0, max_value=500.0, step=0.5, key=key)
-            tear_code_column = (st.session_state.get("code_column_select", default_code_column)
-                                if use_main_code else st.session_state["wrap_code_column_select"])
-            if tear_code_type == "Barcode" and tear_code_column in df_to_use.columns:
-                bar_warning = barcode_bar_warning(df_to_use[tear_code_column],
-                                                  st.session_state["wrap_barcode_width_mm_input"],
-                                                  name="tear-off barcode")
-                if bar_warning:
-                    st.warning(bar_warning)
-        ensure_bool("wrap_custom_fields_check", False)
-        custom_tear_fields = st.checkbox("Customize tear-off fields", key="wrap_custom_fields_check",
-                                         help="By default the tear-off follows the main tag's displayed fields and their order.")
-        if custom_tear_fields:
-            key = "wrap_text_columns_multiselect"
-            if st.session_state.get(key) is None:
-                st.session_state[key] = list(visible_columns)
-            st.session_state[key] = [col for col in st.session_state[key] if col in _all_active_columns]
-            st.multiselect("Tear-off identifier fields", _all_active_columns, key=key,
-                           help="Choose fields independently of the main label. Leave empty for a code-only tab.")
-        else:
-            st.caption("Displayed fields match the main tag: " + (", ".join(visible_columns) or "No text fields"))
-        ensure_bool("wrap_show_names_check", True)
-        st.checkbox("Show field names on tear-off", key="wrap_show_names_check")
-        ensure_float_range("wrap_font_size_input", 7.0, 4.0, 36.0)
-        st.number_input("Tear-off font size (pt)", min_value=4.0, max_value=36.0, step=0.5, key="wrap_font_size_input")
-        st.caption("Identifier text wraps and shrinks to fit. The main label is confined to the space between the loop area and the tear-off.")
+# Wrap tags (loop-lock strips with a tear-off end) are specialist stock: show
+# the section with advanced settings, or whenever a wrap tag is in use.
+if show_advanced or st.session_state.get("wrap_enabled_check"):
+    with st.sidebar.expander("Wrap tag / tear-off", expanded=False):
+        st.caption("Reserve a blank loop area on the left and print an independent identifier on the detachable right end.")
+        ensure_bool("wrap_enabled_check", False)
+        wrap_enabled = st.checkbox("Enable right-hand tear-off section", key="wrap_enabled_check")
+        if active_sheet_preset_name == GEMPLERS_SHEET_NAME:
+            st.caption("Gemplers: 11 × 1 in strips, eight per landscape Letter sheet; 2¼ in (57.15 mm) tear-off. Print at actual size / 100%.")
+            st.caption("The 101.6 mm blank loop area follows the supplier's main-text template. Adjust it to position content around your stock's lock cutouts.")
+            st.markdown(f"[Stock specifications and printable template]({GEMPLERS_SOURCE})")
+        if wrap_enabled:
+            for key, label, minimum, maximum in (
+                ("wrap_leader_mm_input", "Blank loop / lock area (mm)", 0.0, 1000.0),
+                ("wrap_tear_width_mm_input", "Right tear-off width (mm)", 1.0, 1000.0),
+                ("wrap_padding_mm_input", "Tear-off padding (mm)", 0.0, 20.0),
+            ):
+                ensure_float_range(key, WRAP_DEFAULTS[key], minimum, maximum)
+                st.number_input(label, min_value=minimum, max_value=maximum, step=0.5, key=key)
+            ensure_choice("wrap_code_type_select", ["None", "QR", "Barcode"], "QR")
+            tear_code_type = st.selectbox("Tear-off code type", ["None", "QR", "Barcode"], key="wrap_code_type_select")
+            if tear_code_type != "None":
+                ensure_bool("wrap_use_main_code_check", True)
+                use_main_code = st.checkbox("Use main tag code data", key="wrap_use_main_code_check")
+                if not use_main_code:
+                    ensure_choice("wrap_code_column_select", _all_active_columns, default_code_column)
+                    st.selectbox("Tear-off code data", _all_active_columns, key="wrap_code_column_select")
+                ensure_choice("wrap_code_position_select", ["Left", "Right"], "Left")
+                st.selectbox("Tear-off code position", ["Left", "Right"], key="wrap_code_position_select")
+                sizes = [("wrap_qr_size_mm_input", "Tear-off QR size (mm)")] if tear_code_type == "QR" else [
+                    ("wrap_barcode_width_mm_input", "Tear-off barcode width (mm)"),
+                    ("wrap_barcode_height_mm_input", "Tear-off barcode height (mm)"),
+                ]
+                for key, label in sizes:
+                    ensure_float_range(key, WRAP_DEFAULTS[key], 1.0, 500.0)
+                    st.number_input(label, min_value=1.0, max_value=500.0, step=0.5, key=key)
+                tear_code_column = (st.session_state.get("code_column_select", default_code_column)
+                                    if use_main_code else st.session_state["wrap_code_column_select"])
+                if tear_code_column in df_to_use.columns:
+                    code_warning = (
+                        qr_module_warning(df_to_use[tear_code_column], st.session_state["wrap_qr_size_mm_input"],
+                                          name="tear-off QR code")
+                        if tear_code_type == "QR" else
+                        barcode_bar_warning(df_to_use[tear_code_column], st.session_state["wrap_barcode_width_mm_input"],
+                                            name="tear-off barcode")
+                    )
+                    if code_warning:
+                        st.warning(code_warning)
+            ensure_bool("wrap_custom_fields_check", False)
+            custom_tear_fields = st.checkbox("Customize tear-off fields", key="wrap_custom_fields_check",
+                                             help="By default the tear-off follows the main tag's displayed fields and their order.")
+            if custom_tear_fields:
+                key = "wrap_text_columns_multiselect"
+                if st.session_state.get(key) is None:
+                    st.session_state[key] = list(visible_columns)
+                st.session_state[key] = [col for col in st.session_state[key] if col in _all_active_columns]
+                st.multiselect("Tear-off identifier fields", _all_active_columns, key=key,
+                               help="Choose fields independently of the main label. Leave empty for a code-only tab.")
+            else:
+                st.caption("Displayed fields match the main tag: " + (", ".join(visible_columns) or "No text fields"))
+            ensure_bool("wrap_show_names_check", True)
+            st.checkbox("Show field names on tear-off", key="wrap_show_names_check")
+            ensure_float_range("wrap_font_size_input", 7.0, 4.0, 36.0)
+            st.number_input("Tear-off font size (pt)", min_value=4.0, max_value=36.0, step=0.5, key="wrap_font_size_input")
+            st.caption("Identifier text wraps and shrinks to fit. The main label is confined to the space between the loop area and the tear-off.")
+
+st.sidebar.toggle(
+    "Show advanced settings", key="show_advanced_toggle",
+    help="Label border, row spacing, offsets, and wrap tags with a tear-off section — "
+         "adjustments that most labels don't need.",
+)
 
 tear_main_code_column = st.session_state.get("code_column_select", default_code_column)
 if tear_main_code_column not in _all_active_columns:
@@ -2407,7 +2424,7 @@ with st.sidebar:
     st.divider()
     with st.container(border=True):
         st.caption(
-            "Save your current label design settings as a reusable layout file that can be loaded on on the start screen (Step 2). "
+            "Save your current label design settings as a reusable layout file that can be loaded on the start screen."
         )
         template_json = json.dumps(
             build_template_payload(label_width_mm=label_width, label_height_mm=label_height),
@@ -2424,11 +2441,6 @@ with st.sidebar:
         st.session_state["_clear_layout_settings_on_next_run"] = True
         st.session_state.df = None
         st.session_state.data_source = None
-        st.session_state.start_selected_source = None
-        st.session_state.start_layout_source = None
-        st.session_state.start_screen = 1
-        st.session_state.uploaded_csv_bytes = None
-        st.session_state.uploaded_csv_name = None
         st.rerun()
 
 if rename_columns_enabled:
@@ -2448,6 +2460,21 @@ if code_type == "Barcode" and barcode_text_position != "Beside barcode":
                        + len(visible_columns) * max(label_font_size + 4, label_font_size * 1.5 * row_height_factor)
                        + (bool(above_count) + bool(below_count)) * 2 * mm)
     barcode_layout_fits = required_height <= (label_height - 2 * label_padding) * mm
+
+design = dict(
+    visible_columns=visible_columns, code_column=code_column, code_type=code_type,
+    highlight_column=highlight_column, label_font=label_font, label_font_size=label_font_size,
+    label_width=label_width, label_height=label_height, qr_size=qr_size,
+    barcode_width=barcode_width, barcode_height=barcode_height,
+    row_height_factor=row_height_factor, sidebar_factor=sidebar_factor,
+    highlight_padding=highlight_padding, padding=label_padding, show_border=show_border,
+    show_column_names=show_column_names, side_highlight=side_highlight,
+    qr_left_offset=qr_left_offset, text_left_offset=text_left_offset,
+    column_label_map=column_label_map, highlight_color=highlight_color,
+    col_name_width_ratio=col_name_width_ratio, code_position=code_position,
+    barcode_text_position=barcode_text_position, barcode_above_columns=barcode_above_columns,
+    wrap_tag=wrap_tag,
+)
 
 with summary_container:
     st.subheader("1. Dataset Summary & Live Preview")
@@ -2484,34 +2511,11 @@ with summary_container:
         c_prev = canvas.Canvas(buffer, pagesize=(label_width * mm, label_height * mm))
         preview_overflow = set()
 
-        draw_label_on_canvas(
-            c_prev, filtered_df.iloc[row_index], 0, 0,
-            visible_columns, code_column, code_type, highlight_column,
-            label_font, label_font_size, label_width, label_height,
-            qr_size, barcode_width, barcode_height, row_height_factor,
-            sidebar_factor, highlight_padding,
-            padding=label_padding,
-            show_border=show_border,
-            show_column_names=show_column_names,
-            side_highlight=side_highlight,
-            qr_left_offset=qr_left_offset,
-            text_left_offset=text_left_offset,
-            column_label_map=column_label_map,
-            highlight_color=highlight_color,
-            col_name_width_ratio=col_name_width_ratio,
-            code_position=code_position,
-            barcode_text_position=barcode_text_position,
-            barcode_above_columns=barcode_above_columns,
-            wrap_tag=wrap_tag,
-            overflow=preview_overflow,
-        )
+        draw_label_on_canvas(c_prev, filtered_df.iloc[row_index], 0, 0,
+                             overflow=preview_overflow, **design)
         c_prev.save()
-        buffer.seek(0)
-        _pil_img = pdfium.PdfDocument(buffer)[0].render(scale=3).to_pil()
-        _img_bytes = io.BytesIO()
-        _pil_img.save(_img_bytes, format="PNG")
         preview_row_number = active_df.index.get_loc(filtered_df.index[row_index]) + 1
-        st.image(_img_bytes.getvalue(), caption=f"Previewing dataset row {preview_row_number}")
+        st.image(pdf_page_png(buffer.getvalue(), 3), caption=f"Previewing dataset row {preview_row_number}")
         if preview_overflow:
             st.warning(overflow_message(preview_overflow, "This label has"))
     elif filtered_df.empty:
@@ -2520,8 +2524,8 @@ with summary_container:
 with export_container:
     st.subheader("3. Export Options")
     st.caption(
-        "Choose a sheet printer for full-page label stock, or a label printer for one label per page. "
-        "Then click **Generate Multi-Label PDF** to build the export."
+        "Choose a sheet printer for full-page label stock, or a label printer for one label per page, "
+        "then download the PDF."
     )
 
     ensure_choice("printer_type_select", PRINTER_TYPE_OPTIONS, TEMPLATE_DEFAULTS["printer_type_select"])
@@ -2709,57 +2713,64 @@ with export_container:
         else:
             st.warning("The current label size, margins, and gaps do not leave enough printable space for one label.")
 
-    if st.button("Generate Multi-Label PDF"):
-        if df_to_use.empty:
-            st.error("Cannot generate PDF: No rows selected.")
-        elif wrap_error:
-            st.error(f"Cannot generate PDF: {wrap_error}")
-        elif not barcode_layout_fits:
-            st.error("Cannot generate PDF: adjust the barcode and text layout to fit the label.")
-        elif page_format in SHEET_PAGE_FORMAT_OPTIONS and labels_per_sheet == 0:
-            st.error("Cannot generate PDF: the current sheet settings do not fit any labels on the page.")
-        else:
-            pdf_overflow = set()
-            pdf_buffer = generate_sheet_direct(
-                df_to_use, visible_columns, code_column, code_type, highlight_column,
-                label_font, label_font_size, label_width, label_height, qr_size,
-                barcode_width, barcode_height, row_height_factor, sidebar_factor,
-                highlight_padding,
-                padding=label_padding,
-                show_border=show_border,
-                show_column_names=show_column_names,
-                side_highlight=side_highlight,
-                qr_left_offset=qr_left_offset,
-                text_left_offset=text_left_offset,
-                column_label_map=column_label_map,
-                highlight_color=highlight_color,
-                col_name_width_ratio=col_name_width_ratio,
-                code_position=code_position,
-                barcode_text_position=barcode_text_position,
-                barcode_above_columns=barcode_above_columns,
-                wrap_tag=wrap_tag,
-                page_format=page_format,
-                page_margin_top=page_margin_top,
-                page_margin_right=page_margin_right,
-                page_margin_bottom=page_margin_bottom,
-                page_margin_left=page_margin_left,
-                label_gap_horizontal=label_gap_horizontal,
-                label_gap_vertical=label_gap_vertical,
-                repeat_count=repeat_count,
-                sheet_start_slot=sheet_start_slot,
-                overflow=pdf_overflow,
-            )
-            if pdf_overflow:
-                st.warning(overflow_message(pdf_overflow, "Some labels have"))
-            st.success(
-                f"PDF generated for {len(df_to_use)} unique records "
-                f"({len(df_to_use) * repeat_count} total labels)."
-            )
-            st.download_button(
-                "Download PDF",
-                data=pdf_buffer,
-                file_name=f"plantid_labels_{page_format}.pdf",
-                mime="application/pdf",
-            )
+    sheet = dict(
+        page_format=page_format, page_margin_top=page_margin_top, page_margin_right=page_margin_right,
+        page_margin_bottom=page_margin_bottom, page_margin_left=page_margin_left,
+        label_gap_horizontal=label_gap_horizontal, label_gap_vertical=label_gap_vertical,
+    )
+    is_sheet = page_format in SHEET_PAGE_FORMAT_OPTIONS
+    if df_to_use.empty:
+        export_error = "No rows are selected for printing."
+    elif wrap_error:
+        export_error = wrap_error
+    elif not barcode_layout_fits:
+        export_error = "Adjust the barcode and text layout to fit the label."
+    elif is_sheet and labels_per_sheet == 0:
+        export_error = "The current sheet settings do not fit any labels on the page."
+    else:
+        export_error = None
+
+    if export_error:
+        st.error(f"Cannot export: {export_error}")
+    else:
+        export_overflow = find_overflow(df_to_use, design)
+        if export_overflow:
+            st.warning(overflow_message(export_overflow, "Some labels have"))
+
+        if is_sheet and st.toggle("Preview first sheet", key="sheet_preview_toggle",
+                                  help="Show how the first page will print on your sheet stock."):
+            first_sheet_slots = labels_per_sheet - sheet_start_slot + 1
+            first_sheet_rows = df_to_use.head(-(-first_sheet_slots // repeat_count))
+            first_sheet = generate_sheet_direct(first_sheet_rows, **design, **sheet,
+                                                repeat_count=repeat_count, sheet_start_slot=sheet_start_slot)
+            with st.container(border=True, width=640):
+                st.image(pdf_page_png(first_sheet.getvalue(), 1.5), caption="First sheet", width=600)
+
+        def labels_pdf():
+            return generate_sheet_direct(df_to_use, **design, **sheet, repeat_count=repeat_count,
+                                         sheet_start_slot=sheet_start_slot).getvalue()
+
+        st.download_button(
+            "Download labels PDF",
+            data=labels_pdf,
+            file_name=f"plantid_labels_{page_format}.pdf",
+            mime="application/pdf",
+            type="primary",
+            icon=":material/download:",
+            on_click="ignore",
+        )
+        st.caption(f"{len(df_to_use)} records × {repeat_count} "
+                   f"{'copy' if repeat_count == 1 else 'copies'} = {len(df_to_use) * repeat_count} labels.")
+
+    if is_sheet and labels_per_sheet:
+        st.download_button(
+            "Download alignment test page",
+            data=lambda: alignment_test_pdf(design, sheet, labels_per_sheet),
+            file_name=f"plantid_alignment_test_{page_format}.pdf",
+            mime="application/pdf",
+            on_click="ignore",
+            help="Numbered label outlines only. Print on plain paper at 100% / actual size and hold it "
+                 "against your label sheet to check alignment before printing on stock.",
+        )
 
 render_version_footer()

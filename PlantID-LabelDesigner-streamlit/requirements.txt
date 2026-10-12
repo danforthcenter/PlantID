@@ -5,3 +5,4 @@ reportlab
 qrcode
 pillow
 pypdfium2
+openpyxl

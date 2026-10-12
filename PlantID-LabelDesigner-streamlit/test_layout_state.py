@@ -23,6 +23,7 @@ class LayoutStateTests(unittest.TestCase):
         self.assertFalse(self.app.exception)
 
     def select_preset(self, query):
+        self.app.button(key='browse_presets_btn').click().run()
         self.app.text_input(key='label_preset_search').set_value(query).run()
         table = next(table for table in self.app.dataframe
                      if 'Product / template' in table.value.columns)
@@ -35,6 +36,9 @@ class LayoutStateTests(unittest.TestCase):
         state.string_value = json.dumps({'selection': {'rows': [0], 'columns': [], 'cells': []}})
         self.app._run(states)
         self.assertFalse(self.app.exception)
+        # Choosing a preset closes the browser.
+        self.assertFalse(self.app.session_state['preset_browser_open'])
+        self.assertFalse(any(box.key == 'label_preset_search' for box in self.app.text_input))
 
     def assert_wristband(self):
         self.assertFalse(self.app.exception)
