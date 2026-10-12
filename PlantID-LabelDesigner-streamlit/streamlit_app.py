@@ -8,6 +8,7 @@ import pypdfium2 as pdfium
 
 from fractions import Fraction
 from row_selection import build_selection_table, selected_data
+from data_loading import read_label_csv
 
 from reportlab.lib.pagesizes import mm, A4, letter
 from reportlab.pdfgen import canvas
@@ -751,6 +752,43 @@ def sheet_capacity(
     return max(0, columns), max(0, rows)
 
 
+# Two dots on a 203 dpi thermal printer; narrower bars scan unreliably.
+MIN_BARCODE_BAR_MM = 0.25
+
+
+def narrowest_barcode_bar_mm(values, width_mm):
+    """Bar (module) width of the longest Code 128 symbol drawn at width_mm."""
+    longest = sorted({str(value) for value in values}, key=len, reverse=True)[:50]
+    if not longest or width_mm <= 0:
+        return None
+    symbols = [code128.Code128(value, humanReadable=False) for value in longest]
+    modules = max(symbol.width / symbol.barWidth for symbol in symbols)
+    return width_mm / modules
+
+
+def overflow_message(fields, subject):
+    rows_overlap = "text rows overlap" in fields
+    names = sorted(field for field in fields if field != "text rows overlap")
+    parts = []
+    if names:
+        parts.append(f"{subject} text that does not fit and is cut off at the edge: "
+                     + ", ".join(names) + ".")
+    if rows_overlap:
+        parts.append("Text rows overlap because the font is taller than the row spacing.")
+    return " ".join(parts) + (" Reduce the font size or padding, shorten or hide fields, "
+                              "or increase the label size or row height factor.")
+
+
+def barcode_bar_warning(values, width_mm, name="barcode"):
+    bar_mm = narrowest_barcode_bar_mm(values, width_mm)
+    if bar_mm is not None and bar_mm < MIN_BARCODE_BAR_MM:
+        needed = width_mm * MIN_BARCODE_BAR_MM / bar_mm
+        return (f"The {name}'s narrowest bars are {bar_mm:.2f} mm wide for the longest value, which many "
+                f"scanners and 203 dpi label printers cannot read reliably. Use a width of at least "
+                f"{needed:.0f} mm, a QR code, or shorter code values.")
+    return None
+
+
 def page_size_mm(page_format):
     if page_format == "A4":
         return A4[0] / mm, A4[1] / mm
@@ -1068,7 +1106,10 @@ def draw_label_on_canvas(
     barcode_text_position="Beside barcode",
     barcode_above_columns=None,
     wrap_tag=None,
+    overflow=None,
 ):
+    """Draw one label. If `overflow` is a set, the display names of fields
+    that do not fit in the text area are added to it."""
     wrap_active = wrap_tag and wrap_tag["enabled"]
     if wrap_active:
         error = wrap_layout_error(wrap_tag, label_width, label_height)
@@ -1118,6 +1159,11 @@ def draw_label_on_canvas(
         c.setLineWidth(0.5)
         c.rect(x, y, lw_pt, lh_pt, stroke=1, fill=0)
         c.restoreState()
+
+    # Never let content spill onto neighbouring labels on a sheet.
+    if not wrap_active:
+        c.saveState()
+        clip_region(c, x, y, label_width, label_height)
 
     # ---- 2. Sidebar Logic ----
     side_col_width = 0
@@ -1207,12 +1253,7 @@ def draw_label_on_canvas(
             bw_pt = barcode_width * mm
             bh_pt = barcode_height * mm
             code_y = y + (lh_pt - bh_pt) / 2
-            bc = code128.Code128(
-                val,
-                barHeight=bh_pt,
-                barWidth=bw_pt / max(len(val) * 11, 1),
-                humanReadable=False,
-            )
+            bc = code128.Code128(val, barHeight=bh_pt, humanReadable=False)
 
             if stacked_barcode:
                 code_y = stacked_code_y
@@ -1226,13 +1267,11 @@ def draw_label_on_canvas(
                 code_x = x + side_col_width + (qr_left_offset * mm)
                 text_x = code_x + bw_pt + 2 * mm
             c.saveState()
-            if stacked_barcode:
-                # Code128 includes quiet zones and checksum bars in its actual width.
-                c.translate(code_x, code_y)
-                c.scale(bw_pt / bc.width, 1)
-                bc.drawOn(c, 0, 0)
-            else:
-                bc.drawOn(c, code_x, code_y)
+            # Code128 includes quiet zones and checksum bars in its actual width,
+            # so scale the whole symbol to the requested width.
+            c.translate(code_x, code_y)
+            c.scale(bw_pt / bc.width, 1)
+            bc.drawOn(c, 0, 0)
             c.restoreState()
 
     text_x += text_left_offset * mm
@@ -1256,9 +1295,24 @@ def draw_label_on_canvas(
             text_rows.extend((col, top - idx * stacked_row_height - label_font_size - 2)
                              for idx, col in enumerate(columns))
 
+    if overflow is not None and not stacked_barcode and len(visible_columns) > 1 \
+            and row_height < label_font_size:
+        overflow.add("text rows overlap")
+
     for col_name, y_pos in text_rows:
         val = str(df_row[col_name])
         display_name = column_label_map.get(col_name, col_name)
+        if overflow is not None:
+            value_font = font_variant(label_font, "bold" if col_name == highlight_column else "regular")
+            value_left = val_left_x if show_column_names else text_x
+            name_left = name_right_x - stringWidth(
+                f"{display_name}:", font_variant(label_font, "italic"), label_font_size)
+            if (value_left + stringWidth(val, value_font, label_font_size) > text_right + 0.01
+                    # Names may use the 2 mm gutter beside the code.
+                    or (show_column_names and name_left < text_x - 2 * mm)
+                    or y_pos - 0.25 * label_font_size < y
+                    or y_pos + 0.75 * label_font_size > y + lh_pt):
+                overflow.add(display_name)
 
         c.saveState()
         if show_column_names:
@@ -1290,8 +1344,8 @@ def draw_label_on_canvas(
             c.drawString(draw_x, y_pos, val)
         c.restoreState()
 
+    c.restoreState()
     if wrap_active:
-        c.restoreState()
         draw_tear_off(c, df_row, tear_x, y, label_height, wrap_tag,
                       font=label_font, labels=column_label_map, border=show_border)
 
@@ -1339,6 +1393,7 @@ def generate_sheet_direct(
     barcode_text_position="Beside barcode",
     barcode_above_columns=None,
     wrap_tag=None,
+    overflow=None,
 ):
     if page_margin_top is None:
         page_margin_top = page_margin
@@ -1433,6 +1488,7 @@ def generate_sheet_direct(
                 barcode_text_position=barcode_text_position,
                 barcode_above_columns=barcode_above_columns,
                 wrap_tag=wrap_tag,
+                overflow=overflow,
             )
 
             x += label_width * mm + gap_horizontal
@@ -1513,10 +1569,15 @@ if st.session_state.df is None:
         csv_ready = st.session_state.start_selected_source is not None
         if st.button("Next →", key="start_next_btn", disabled=not csv_ready):
             if st.session_state.start_selected_source == "Uploaded CSV" and uploaded_file is not None:
-                st.session_state.uploaded_csv_bytes = uploaded_file.read()
-                st.session_state.uploaded_csv_name = uploaded_file.name
-                st.session_state.start_screen = 2
-                st.rerun()
+                csv_bytes = uploaded_file.getvalue()
+                _, csv_error = read_label_csv(csv_bytes)
+                if csv_error:
+                    st.error(csv_error)
+                else:
+                    st.session_state.uploaded_csv_bytes = csv_bytes
+                    st.session_state.uploaded_csv_name = uploaded_file.name
+                    st.session_state.start_screen = 2
+                    st.rerun()
             elif st.session_state.start_selected_source == "Example dataset":
                 st.session_state.start_screen = 2
                 st.rerun()
@@ -1585,7 +1646,8 @@ if st.session_state.df is None:
             if st.button("Open Label Designer →", key="start_go_btn", disabled=not layout_ready, width="stretch"):
                 if st.session_state.start_selected_source == "Example dataset":
                     if os.path.exists(example_csv_path):
-                        st.session_state.df = pd.read_csv(example_csv_path)
+                        with open(example_csv_path, "rb") as example_csv:
+                            st.session_state.df, _ = read_label_csv(example_csv.read())
                     else:
                         st.session_state.df = pd.DataFrame({
                             "ID": ["P001", "P002", "P003", "P004"],
@@ -1597,7 +1659,7 @@ if st.session_state.df is None:
                     st.session_state.scroll_to_top = True
                     st.rerun()
                 elif st.session_state.start_selected_source == "Uploaded CSV" and st.session_state.uploaded_csv_bytes is not None:
-                    st.session_state.df = pd.read_csv(io.BytesIO(st.session_state.uploaded_csv_bytes))
+                    st.session_state.df, _ = read_label_csv(st.session_state.uploaded_csv_bytes)
                     st.session_state.data_source = "Uploaded CSV"
                     st.session_state.scroll_to_top = True
                     st.rerun()
@@ -2135,6 +2197,9 @@ with st.sidebar.expander("Code Settings", expanded=False):
                 step=1, input_min=1, input_max=500,
                 help="Vertical height of the barcode bars.")
             qr_size = 0
+            bar_warning = barcode_bar_warning(df_to_use[code_column], barcode_width)
+            if bar_warning:
+                st.warning(bar_warning)
 
         max_qr_left_offset = max(1, int(label_width / 2))
         ensure_int_range("qr_left_offset_slider", TEMPLATE_DEFAULTS["qr_left_offset_slider"], 0, max_qr_left_offset)
@@ -2226,7 +2291,7 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
     highlight_options = ["None"] + active_df.columns.tolist()
     ensure_choice("highlight_column_select", highlight_options, TEMPLATE_DEFAULTS["highlight_column_select"])
     highlight_column = st.selectbox("Highlight column", highlight_options, key="highlight_column_select",
-        help="Colour the label background based on a column's value — useful for visually grouping treatments, genotypes, or experiment blocks.")
+        help="Make one field stand out by printing its value bold in a filled (black) or outlined (white) box — useful for treatments, genotypes, or experiment blocks.")
     highlight_column = None if highlight_column == "None" else highlight_column
 
     if highlight_column:
@@ -2241,10 +2306,10 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 
         ensure_int_range("highlight_padding_slider", TEMPLATE_DEFAULTS["highlight_padding_slider"], 0, 20)
         ensure_bool("side_highlight_check", TEMPLATE_DEFAULTS["side_highlight_check"])
-        highlight_padding = st.slider("Highlight padding", 0, 20, key="highlight_padding_slider",
-            help="Extra space around the highlighted text area within the coloured background.")
+        highlight_padding = st.slider("Highlight padding (pt)", 0, 20, key="highlight_padding_slider",
+            help="Extra width, in points, added to the box behind the highlighted value.")
         side_highlight = st.checkbox("Side strip highlight", key="side_highlight_check",
-            help="Add a solid coloured vertical bar down one edge of the label as an alternative or complement to the full background highlight.")
+            help="Also print the highlighted field vertically in a strip down the left edge of the label.")
     else:
         highlight_color = colors.black
         highlight_padding = 0
@@ -2253,7 +2318,7 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
     if side_highlight:
         ensure_float_range("sidebar_factor_slider", TEMPLATE_DEFAULTS["sidebar_factor_slider"], 0.05, 0.5)
         sidebar_factor = st.slider("Sidebar width factor", 0.05, 0.5, key="sidebar_factor_slider",
-            help="Width of the coloured side strip as a fraction of the total label width, e.g. 0.1 = 10%.")
+            help="Width of the side strip as a fraction of the total label width, e.g. 0.1 = 10%.")
     else:
         sidebar_factor = 0
 
@@ -2317,6 +2382,14 @@ with st.sidebar.expander("Wrap tag / tear-off", expanded=False):
             for key, label in sizes:
                 ensure_float_range(key, WRAP_DEFAULTS[key], 1.0, 500.0)
                 st.number_input(label, min_value=1.0, max_value=500.0, step=0.5, key=key)
+            tear_code_column = (st.session_state.get("code_column_select", default_code_column)
+                                if use_main_code else st.session_state["wrap_code_column_select"])
+            if tear_code_type == "Barcode" and tear_code_column in df_to_use.columns:
+                bar_warning = barcode_bar_warning(df_to_use[tear_code_column],
+                                                  st.session_state["wrap_barcode_width_mm_input"],
+                                                  name="tear-off barcode")
+                if bar_warning:
+                    st.warning(bar_warning)
         ensure_bool("wrap_custom_fields_check", False)
         custom_tear_fields = st.checkbox("Customize tear-off fields", key="wrap_custom_fields_check",
                                          help="By default the tear-off follows the main tag's displayed fields and their order.")
@@ -2409,6 +2482,7 @@ with summary_container:
             )
         buffer = io.BytesIO()
         c_prev = canvas.Canvas(buffer, pagesize=(label_width * mm, label_height * mm))
+        preview_overflow = set()
 
         draw_label_on_canvas(
             c_prev, filtered_df.iloc[row_index], 0, 0,
@@ -2429,13 +2503,17 @@ with summary_container:
             barcode_text_position=barcode_text_position,
             barcode_above_columns=barcode_above_columns,
             wrap_tag=wrap_tag,
+            overflow=preview_overflow,
         )
         c_prev.save()
         buffer.seek(0)
         _pil_img = pdfium.PdfDocument(buffer)[0].render(scale=3).to_pil()
         _img_bytes = io.BytesIO()
         _pil_img.save(_img_bytes, format="PNG")
-        st.image(_img_bytes.getvalue(), caption=f"Previewing Row {row_index + 1}")
+        preview_row_number = active_df.index.get_loc(filtered_df.index[row_index]) + 1
+        st.image(_img_bytes.getvalue(), caption=f"Previewing dataset row {preview_row_number}")
+        if preview_overflow:
+            st.warning(overflow_message(preview_overflow, "This label has"))
     elif filtered_df.empty:
         st.info("No rows match the filter for preview.")
 
@@ -2641,6 +2719,7 @@ with export_container:
         elif page_format in SHEET_PAGE_FORMAT_OPTIONS and labels_per_sheet == 0:
             st.error("Cannot generate PDF: the current sheet settings do not fit any labels on the page.")
         else:
+            pdf_overflow = set()
             pdf_buffer = generate_sheet_direct(
                 df_to_use, visible_columns, code_column, code_type, highlight_column,
                 label_font, label_font_size, label_width, label_height, qr_size,
@@ -2668,7 +2747,10 @@ with export_container:
                 label_gap_vertical=label_gap_vertical,
                 repeat_count=repeat_count,
                 sheet_start_slot=sheet_start_slot,
+                overflow=pdf_overflow,
             )
+            if pdf_overflow:
+                st.warning(overflow_message(pdf_overflow, "Some labels have"))
             st.success(
                 f"PDF generated for {len(df_to_use)} unique records "
                 f"({len(df_to_use) * repeat_count} total labels)."
