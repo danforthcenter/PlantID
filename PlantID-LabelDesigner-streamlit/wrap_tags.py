@@ -108,6 +108,7 @@ def draw_tear_off(c, row, x, y, height, config, font='Helvetica', labels=None, b
         else:
             obj = code128.Code128(value, barHeight=code_h, humanReadable=False)
             c.saveState()
+            c.setFillColor(colors.black)  # Bars use the current fill colour.
             c.translate(code_x, code_y)
             c.scale(code_w / obj.width, 1)
             obj.drawOn(c, 0, 0)

@@ -1248,6 +1248,7 @@ def draw_label_on_canvas(
                 code_x = x + side_col_width + (qr_left_offset * mm)
                 text_x = code_x + bw_pt + 2 * mm
             c.saveState()
+            c.setFillColor(colors.black)  # Bars use the current fill colour.
             # Code128 includes quiet zones and checksum bars in its actual width,
             # so scale the whole symbol to the requested width.
             c.translate(code_x, code_y)
