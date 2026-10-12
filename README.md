@@ -4,7 +4,7 @@
 PlantID Label Designer is a Streamlit web application for generating customizable plant sample labels. The app allows researchers to visualize, design, and export labels with QR codes, highlighted metadata, and flexible sizing for a variety of use cases including cryovials, plant tags, wrap tags, and more.
 It is designed to work both locally and on Streamlit Cloud.
 
-![Examples of labels made with PlantID Label Designer: a loop-lock wrap tag with tear-off, field plot tag, greenhouse pot label, barcode tray label, cryovial labels, and a wristband label](docs/label-showcase.png)
+![One spreadsheet row, PlantID 2026-Exp1_p301_B73-WW, drawn by PlantID Label Designer as a loop-lock wrap tag with tear-off, a greenhouse pot label, a barcode tray label, and cryovial labels](docs/label-showcase.png)
 
 ## Try the online version
 Try the app directly without installation
