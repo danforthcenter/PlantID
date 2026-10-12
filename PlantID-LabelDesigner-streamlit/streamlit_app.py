@@ -446,6 +446,7 @@ def sync_preset_table_selection(widget_key, options, preset_lookup):
     if not rows or not 0 <= rows[0] < len(options):
         return
     st.session_state["preset_select"] = options[rows[0]]
+    st.session_state["preset_browser_open"] = False
     sync_sheet_preset_from_label_preset(preset_lookup)
 
 
@@ -1920,6 +1921,64 @@ with st.sidebar.expander("Data Fields", expanded=True):
         help="How many times each record will be printed.",
     )
 
+def close_preset_browser():
+    st.session_state["preset_browser_open"] = False
+
+
+# A dialog opens centred with its top in view, so the search box is always
+# visible; the old popover could open above the top of short windows.
+@st.dialog("Find a label size", width="large", on_dismiss=close_preset_browser)
+def preset_browser(preset_size_options, preset_records, preset_dimension_lookup):
+    query = st.text_input(
+        "Search label presets",
+        placeholder="Zebra, 4x2, 101.6 x 50.8 mm…",
+        key="label_preset_search",
+        help="Search by brand, product number, or width × height. Sizes without units match inches or mm; fractions such as 2 1/4 x 1 1/4 also work.",
+    )
+    matches = [option for option in preset_size_options
+               if label_preset_matches(preset_records[option], query)]
+    matches.sort(key=lambda option: (
+        option != st.session_state["preset_select"],
+        label_preset_table_row(preset_records[option])["Brand"].casefold(),
+        label_preset_table_row(preset_records[option])["Type"].casefold(),
+        preset_records[option][3],
+        preset_records[option][4],
+        preset_records[option][0].casefold(),
+    ))
+    st.caption(f"{len(matches)} of {len(preset_size_options)} presets · Width × height · Select a row to apply")
+    if matches:
+        # A changed result set gets fresh selection state so a row index
+        # from an earlier search can never select a different preset.
+        result_id = hashlib.sha256(json.dumps(matches).encode()).hexdigest()[:16]
+        table_key = layout_widget_key(f"label_preset_table_{result_id}")
+        st.dataframe(
+            pd.DataFrame([label_preset_table_row(preset_records[option])
+                          for option in matches]),
+            hide_index=True,
+            width=900,
+            # Short enough that the dialog fits a laptop screen; the table scrolls.
+            height=min(318, 38 + 35 * len(matches)),
+            row_height=35,
+            column_config={
+                "Size (in)": st.column_config.TextColumn(width=150),
+                "Size (mm)": st.column_config.TextColumn(width=130),
+                "Brand": st.column_config.TextColumn(width=110),
+                "Type": st.column_config.TextColumn(width=130),
+                "Product / template": st.column_config.TextColumn(width=330),
+            },
+            key=table_key,
+            selection_mode="single-row",
+            on_select=lambda key=table_key, options=matches, lookup=preset_dimension_lookup: (
+                sync_preset_table_selection(key, options, lookup)
+            ),
+        )
+    else:
+        st.info("No matching presets. Try another size or brand, or choose Custom Size in the sidebar.")
+    st.caption(f"Selected: {preset_records[st.session_state['preset_select']][0]}")
+    if not st.session_state.get("preset_browser_open"):
+        st.rerun()  # A preset was chosen: close and apply it to the whole app.
+
+
 # 2. Label Size
 with st.sidebar.expander("Label Size", expanded=False):
     st.caption(
@@ -2011,53 +2070,9 @@ with st.sidebar.expander("Label Size", expanded=False):
         )
         ensure_choice("preset_select", preset_size_options, fallback_option)
         preset_records = dict(zip(preset_size_options, LABEL_PRESETS))
-        with st.popover("Browse presets", icon=":material/table_view:", width="stretch"):
-            st.markdown("**Find a label size**")
-            query = st.text_input(
-                "Search label presets",
-                placeholder="Zebra, 4x2, 101.6 x 50.8 mm…",
-                key="label_preset_search",
-                help="Search by brand, product number, or width × height. Sizes without units match inches or mm; fractions such as 2 1/4 x 1 1/4 also work.",
-            )
-            matches = [option for option in preset_size_options
-                       if label_preset_matches(preset_records[option], query)]
-            matches.sort(key=lambda option: (
-                option != st.session_state["preset_select"],
-                label_preset_table_row(preset_records[option])["Brand"].casefold(),
-                label_preset_table_row(preset_records[option])["Type"].casefold(),
-                preset_records[option][3],
-                preset_records[option][4],
-                preset_records[option][0].casefold(),
-            ))
-            st.caption(f"{len(matches)} of {len(preset_size_options)} presets · Width × height · Select a row to apply")
-            if matches:
-                # A changed result set gets fresh selection state so a row index
-                # from an earlier search can never select a different preset.
-                result_id = hashlib.sha256(json.dumps(matches).encode()).hexdigest()[:16]
-                table_key = layout_widget_key(f"label_preset_table_{result_id}")
-                st.dataframe(
-                    pd.DataFrame([label_preset_table_row(preset_records[option])
-                                  for option in matches]),
-                    hide_index=True,
-                    width=900,
-                    height=min(390, 38 + 35 * len(matches)),
-                    row_height=35,
-                    column_config={
-                        "Size (in)": st.column_config.TextColumn(width=150),
-                        "Size (mm)": st.column_config.TextColumn(width=130),
-                        "Brand": st.column_config.TextColumn(width=110),
-                        "Type": st.column_config.TextColumn(width=130),
-                        "Product / template": st.column_config.TextColumn(width=330),
-                    },
-                    key=table_key,
-                    selection_mode="single-row",
-                    on_select=lambda key=table_key, options=matches, lookup=preset_dimension_lookup: (
-                        sync_preset_table_selection(key, options, lookup)
-                    ),
-                )
-            else:
-                st.info("No matching presets. Try another size or brand, or choose Custom Size above.")
-            st.caption(f"Selected: {preset_records[st.session_state['preset_select']][0]}")
+        if st.button("Browse presets", icon=":material/table_view:", width="stretch",
+                     key="browse_presets_btn"):
+            st.session_state["preset_browser_open"] = True
         selected = preset_records[st.session_state["preset_select"]]
         st.session_state["last_label_preset_name"] = selected[0]
         label_width, label_height = selected[3:5]
@@ -2067,6 +2082,9 @@ with st.sidebar.expander("Label Size", expanded=False):
             f"**{selected_display['Size (in)']} in**  \n"
             f"{selected_display['Size (mm)']} mm · Width × height"
         )
+
+if label_size_mode == LABEL_SIZE_PRESET and st.session_state.get("preset_browser_open"):
+    preset_browser(preset_size_options, preset_records, preset_dimension_lookup)
 
 if active_sheet_preset:
     label_width = active_sheet_preset["label_width_mm"]
