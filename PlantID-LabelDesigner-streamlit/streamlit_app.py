@@ -72,8 +72,8 @@ FILTER_MATCH_ANY = "Match any filter"
 FILTER_MATCH_OPTIONS = [FILTER_MATCH_ALL, FILTER_MATCH_ANY]
 FILTER_OPERATOR_OPTIONS = ["Contains", "Does not contain", "Equals", "Is blank", "Is not blank"]
 
-FINE_TUNING_KEYS = [
-    "qr_left_offset_slider", "col_name_width_ratio_slider",
+ADVANCED_KEYS = [
+    "show_border_check", "qr_left_offset_slider", "col_name_width_ratio_slider",
     "highlight_padding_slider", "sidebar_factor_slider",
 ]
 
@@ -1818,14 +1818,15 @@ if (
 if active_sheet_preset:
     apply_sheet_preset_to_state(active_sheet_preset)
 
-# Fine-tuning controls are hidden by default; their saved values still apply.
+# Advanced settings are hidden by default; their saved values still apply.
 # Re-assigning keeps a hidden widget's value, which Streamlit would otherwise drop.
-for key in FINE_TUNING_KEYS:
+for key in ADVANCED_KEYS:
     if key in st.session_state:
         st.session_state[key] = st.session_state[key]
-show_fine_tuning = st.sidebar.toggle(
-    "Show fine-tuning controls", key="show_fine_tuning_toggle",
-    help="Row spacing, offsets, and other adjustments that most labels don't need.",
+show_advanced = st.sidebar.toggle(
+    "Show advanced settings", key="show_advanced_toggle",
+    help="Label border, row spacing, offsets, and wrap tags with a tear-off section — "
+         "adjustments that most labels don't need.",
 )
 
 # 1. Data Fields
@@ -2164,7 +2165,7 @@ with st.sidebar.expander("Code Settings", expanded=False):
         max_qr_left_offset = max(1, int(label_width / 2))
         ensure_int_range("qr_left_offset_slider", TEMPLATE_DEFAULTS["qr_left_offset_slider"], 0, max_qr_left_offset)
         qr_left_offset = st.session_state["qr_left_offset_slider"]
-        if show_fine_tuning:
+        if show_advanced:
             qr_left_offset = st.slider("Code offset from edge (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider",
                 help="Nudge the code inward from the label edge — useful if the code is being clipped by the label border or printer margin.")
     else:
@@ -2180,12 +2181,16 @@ with st.sidebar.expander("Code Settings", expanded=False):
 # 4. Design & Aesthetics
 with st.sidebar.expander("Design & Aesthetics", expanded=False):
     st.caption(
-        "Adjust the appearance of each label. Turn on **Show fine-tuning controls** at the top "
-        "of the sidebar for spacing and offset adjustments."
+        "Adjust the appearance of each label. Turn on **Show advanced settings** at the top "
+        "of the sidebar for the label border, spacing, and offset adjustments."
     )
     ensure_bool("show_border_check", TEMPLATE_DEFAULTS["show_border_check"])
-    show_border = st.checkbox("Show label border", key="show_border_check",
-        help="Draw a thin border around the edge of each label. Useful for cutting guidance on sheet printouts.")
+    show_border = st.session_state["show_border_check"]
+    if show_advanced:
+        show_border = st.checkbox("Show label border", key="show_border_check",
+            help="Draw a thin grey border around each label. Useful as a cutting guide on plain paper; "
+                 "turn it off for die-cut labels, where a slightly misaligned printer would print it "
+                 "on the visible label.")
 
     ensure_bool("show_column_names_check", TEMPLATE_DEFAULTS["show_column_names_check"])
     show_column_names_widget_key = seed_layout_widget(
@@ -2200,7 +2205,7 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 
     ensure_float_range("row_height_factor_slider", TEMPLATE_DEFAULTS["row_height_factor_slider"], 0.1, 1.5)
     row_height_factor = st.session_state["row_height_factor_slider"]
-    if show_fine_tuning:
+    if show_advanced:
         row_height_factor_widget_key = seed_layout_widget(
             "row_height_factor_slider",
             st.session_state["row_height_factor_slider"],
@@ -2226,7 +2231,7 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 
     ensure_int_range("col_name_width_ratio_slider", TEMPLATE_DEFAULTS["col_name_width_ratio_slider"], 0, 60)
     col_name_width_ratio = st.session_state["col_name_width_ratio_slider"] / 100.0
-    if show_fine_tuning and show_column_names:
+    if show_advanced and show_column_names:
         col_name_width_ratio = st.slider(
             "Column name width (%)", 0, 60, key="col_name_width_ratio_slider",
             help="Percentage of text area reserved for column name labels.",
@@ -2235,7 +2240,7 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
     max_text_left_offset = max(1, int(label_width / 2))
     ensure_int_range("text_left_offset_slider", TEMPLATE_DEFAULTS["text_left_offset_slider"], 0, max_text_left_offset)
     text_left_offset = st.session_state["text_left_offset_slider"]
-    if show_fine_tuning:
+    if show_advanced:
         text_left_offset_widget_key = seed_layout_widget(
             "text_left_offset_slider",
             st.session_state["text_left_offset_slider"],
@@ -2273,7 +2278,7 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
         ensure_int_range("highlight_padding_slider", TEMPLATE_DEFAULTS["highlight_padding_slider"], 0, 20)
         ensure_bool("side_highlight_check", TEMPLATE_DEFAULTS["side_highlight_check"])
         highlight_padding = st.session_state["highlight_padding_slider"]
-        if show_fine_tuning:
+        if show_advanced:
             highlight_padding = st.slider("Highlight padding (pt)", 0, 20, key="highlight_padding_slider",
                 help="Extra width, in points, added to the box behind the highlighted value.")
         side_highlight = st.checkbox("Side strip highlight", key="side_highlight_check",
@@ -2286,7 +2291,7 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
     if side_highlight:
         ensure_float_range("sidebar_factor_slider", TEMPLATE_DEFAULTS["sidebar_factor_slider"], 0.05, 0.5)
         sidebar_factor = st.session_state["sidebar_factor_slider"]
-        if show_fine_tuning:
+        if show_advanced:
             sidebar_factor = st.slider("Sidebar width factor", 0.05, 0.5, key="sidebar_factor_slider",
                 help="Width of the side strip as a fraction of the total label width, e.g. 0.1 = 10%.")
     else:
@@ -2319,68 +2324,71 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
 for key in WRAP_DEFAULTS:
     if key in st.session_state:
         st.session_state[key] = st.session_state[key]
-with st.sidebar.expander("Wrap tag / tear-off", expanded=False):
-    st.caption("Reserve a blank loop area on the left and print an independent identifier on the detachable right end.")
-    ensure_bool("wrap_enabled_check", False)
-    wrap_enabled = st.checkbox("Enable right-hand tear-off section", key="wrap_enabled_check")
-    if active_sheet_preset_name == GEMPLERS_SHEET_NAME:
-        st.caption("Gemplers: 11 × 1 in strips, eight per landscape Letter sheet; 2¼ in (57.15 mm) tear-off. Print at actual size / 100%.")
-        st.caption("The 101.6 mm blank loop area follows the supplier's main-text template. Adjust it to position content around your stock's lock cutouts.")
-        st.markdown(f"[Stock specifications and printable template]({GEMPLERS_SOURCE})")
-    if wrap_enabled:
-        for key, label, minimum, maximum in (
-            ("wrap_leader_mm_input", "Blank loop / lock area (mm)", 0.0, 1000.0),
-            ("wrap_tear_width_mm_input", "Right tear-off width (mm)", 1.0, 1000.0),
-            ("wrap_padding_mm_input", "Tear-off padding (mm)", 0.0, 20.0),
-        ):
-            ensure_float_range(key, WRAP_DEFAULTS[key], minimum, maximum)
-            st.number_input(label, min_value=minimum, max_value=maximum, step=0.5, key=key)
-        ensure_choice("wrap_code_type_select", ["None", "QR", "Barcode"], "QR")
-        tear_code_type = st.selectbox("Tear-off code type", ["None", "QR", "Barcode"], key="wrap_code_type_select")
-        if tear_code_type != "None":
-            ensure_bool("wrap_use_main_code_check", True)
-            use_main_code = st.checkbox("Use main tag code data", key="wrap_use_main_code_check")
-            if not use_main_code:
-                ensure_choice("wrap_code_column_select", _all_active_columns, default_code_column)
-                st.selectbox("Tear-off code data", _all_active_columns, key="wrap_code_column_select")
-            ensure_choice("wrap_code_position_select", ["Left", "Right"], "Left")
-            st.selectbox("Tear-off code position", ["Left", "Right"], key="wrap_code_position_select")
-            sizes = [("wrap_qr_size_mm_input", "Tear-off QR size (mm)")] if tear_code_type == "QR" else [
-                ("wrap_barcode_width_mm_input", "Tear-off barcode width (mm)"),
-                ("wrap_barcode_height_mm_input", "Tear-off barcode height (mm)"),
-            ]
-            for key, label in sizes:
-                ensure_float_range(key, WRAP_DEFAULTS[key], 1.0, 500.0)
-                st.number_input(label, min_value=1.0, max_value=500.0, step=0.5, key=key)
-            tear_code_column = (st.session_state.get("code_column_select", default_code_column)
-                                if use_main_code else st.session_state["wrap_code_column_select"])
-            if tear_code_column in df_to_use.columns:
-                code_warning = (
-                    qr_module_warning(df_to_use[tear_code_column], st.session_state["wrap_qr_size_mm_input"],
-                                      name="tear-off QR code")
-                    if tear_code_type == "QR" else
-                    barcode_bar_warning(df_to_use[tear_code_column], st.session_state["wrap_barcode_width_mm_input"],
-                                        name="tear-off barcode")
-                )
-                if code_warning:
-                    st.warning(code_warning)
-        ensure_bool("wrap_custom_fields_check", False)
-        custom_tear_fields = st.checkbox("Customize tear-off fields", key="wrap_custom_fields_check",
-                                         help="By default the tear-off follows the main tag's displayed fields and their order.")
-        if custom_tear_fields:
-            key = "wrap_text_columns_multiselect"
-            if st.session_state.get(key) is None:
-                st.session_state[key] = list(visible_columns)
-            st.session_state[key] = [col for col in st.session_state[key] if col in _all_active_columns]
-            st.multiselect("Tear-off identifier fields", _all_active_columns, key=key,
-                           help="Choose fields independently of the main label. Leave empty for a code-only tab.")
-        else:
-            st.caption("Displayed fields match the main tag: " + (", ".join(visible_columns) or "No text fields"))
-        ensure_bool("wrap_show_names_check", True)
-        st.checkbox("Show field names on tear-off", key="wrap_show_names_check")
-        ensure_float_range("wrap_font_size_input", 7.0, 4.0, 36.0)
-        st.number_input("Tear-off font size (pt)", min_value=4.0, max_value=36.0, step=0.5, key="wrap_font_size_input")
-        st.caption("Identifier text wraps and shrinks to fit. The main label is confined to the space between the loop area and the tear-off.")
+# Wrap tags (loop-lock strips with a tear-off end) are specialist stock: show
+# the section with advanced settings, or whenever a wrap tag is in use.
+if show_advanced or st.session_state.get("wrap_enabled_check"):
+    with st.sidebar.expander("Wrap tag / tear-off", expanded=False):
+        st.caption("Reserve a blank loop area on the left and print an independent identifier on the detachable right end.")
+        ensure_bool("wrap_enabled_check", False)
+        wrap_enabled = st.checkbox("Enable right-hand tear-off section", key="wrap_enabled_check")
+        if active_sheet_preset_name == GEMPLERS_SHEET_NAME:
+            st.caption("Gemplers: 11 × 1 in strips, eight per landscape Letter sheet; 2¼ in (57.15 mm) tear-off. Print at actual size / 100%.")
+            st.caption("The 101.6 mm blank loop area follows the supplier's main-text template. Adjust it to position content around your stock's lock cutouts.")
+            st.markdown(f"[Stock specifications and printable template]({GEMPLERS_SOURCE})")
+        if wrap_enabled:
+            for key, label, minimum, maximum in (
+                ("wrap_leader_mm_input", "Blank loop / lock area (mm)", 0.0, 1000.0),
+                ("wrap_tear_width_mm_input", "Right tear-off width (mm)", 1.0, 1000.0),
+                ("wrap_padding_mm_input", "Tear-off padding (mm)", 0.0, 20.0),
+            ):
+                ensure_float_range(key, WRAP_DEFAULTS[key], minimum, maximum)
+                st.number_input(label, min_value=minimum, max_value=maximum, step=0.5, key=key)
+            ensure_choice("wrap_code_type_select", ["None", "QR", "Barcode"], "QR")
+            tear_code_type = st.selectbox("Tear-off code type", ["None", "QR", "Barcode"], key="wrap_code_type_select")
+            if tear_code_type != "None":
+                ensure_bool("wrap_use_main_code_check", True)
+                use_main_code = st.checkbox("Use main tag code data", key="wrap_use_main_code_check")
+                if not use_main_code:
+                    ensure_choice("wrap_code_column_select", _all_active_columns, default_code_column)
+                    st.selectbox("Tear-off code data", _all_active_columns, key="wrap_code_column_select")
+                ensure_choice("wrap_code_position_select", ["Left", "Right"], "Left")
+                st.selectbox("Tear-off code position", ["Left", "Right"], key="wrap_code_position_select")
+                sizes = [("wrap_qr_size_mm_input", "Tear-off QR size (mm)")] if tear_code_type == "QR" else [
+                    ("wrap_barcode_width_mm_input", "Tear-off barcode width (mm)"),
+                    ("wrap_barcode_height_mm_input", "Tear-off barcode height (mm)"),
+                ]
+                for key, label in sizes:
+                    ensure_float_range(key, WRAP_DEFAULTS[key], 1.0, 500.0)
+                    st.number_input(label, min_value=1.0, max_value=500.0, step=0.5, key=key)
+                tear_code_column = (st.session_state.get("code_column_select", default_code_column)
+                                    if use_main_code else st.session_state["wrap_code_column_select"])
+                if tear_code_column in df_to_use.columns:
+                    code_warning = (
+                        qr_module_warning(df_to_use[tear_code_column], st.session_state["wrap_qr_size_mm_input"],
+                                          name="tear-off QR code")
+                        if tear_code_type == "QR" else
+                        barcode_bar_warning(df_to_use[tear_code_column], st.session_state["wrap_barcode_width_mm_input"],
+                                            name="tear-off barcode")
+                    )
+                    if code_warning:
+                        st.warning(code_warning)
+            ensure_bool("wrap_custom_fields_check", False)
+            custom_tear_fields = st.checkbox("Customize tear-off fields", key="wrap_custom_fields_check",
+                                             help="By default the tear-off follows the main tag's displayed fields and their order.")
+            if custom_tear_fields:
+                key = "wrap_text_columns_multiselect"
+                if st.session_state.get(key) is None:
+                    st.session_state[key] = list(visible_columns)
+                st.session_state[key] = [col for col in st.session_state[key] if col in _all_active_columns]
+                st.multiselect("Tear-off identifier fields", _all_active_columns, key=key,
+                               help="Choose fields independently of the main label. Leave empty for a code-only tab.")
+            else:
+                st.caption("Displayed fields match the main tag: " + (", ".join(visible_columns) or "No text fields"))
+            ensure_bool("wrap_show_names_check", True)
+            st.checkbox("Show field names on tear-off", key="wrap_show_names_check")
+            ensure_float_range("wrap_font_size_input", 7.0, 4.0, 36.0)
+            st.number_input("Tear-off font size (pt)", min_value=4.0, max_value=36.0, step=0.5, key="wrap_font_size_input")
+            st.caption("Identifier text wraps and shrinks to fit. The main label is confined to the space between the loop area and the tear-off.")
 
 tear_main_code_column = st.session_state.get("code_column_select", default_code_column)
 if tear_main_code_column not in _all_active_columns:

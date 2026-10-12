@@ -78,6 +78,9 @@ class WrapTagTests(unittest.TestCase):
         saved = self.app.session_state['_saved_layout']
         self.app.checkbox(key='wrap_enabled_check').uncheck().run()
         self.app.run()  # hidden-widget cleanup must not lose customization
+        # A disabled wrap tag is an advanced setting, so its section is hidden.
+        self.assertFalse(any(box.key == 'wrap_enabled_check' for box in self.app.checkbox))
+        self.app.toggle(key='show_advanced_toggle').set_value(True).run()
         self.app.checkbox(key='wrap_enabled_check').check().run()
         self.assertEqual(self.app.session_state['wrap_barcode_width_mm_input'], 28)
         self.assertEqual(self.app.session_state['wrap_text_columns_multiselect'], ['Plot', 'Genotype'])

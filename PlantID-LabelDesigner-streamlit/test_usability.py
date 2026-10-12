@@ -1,4 +1,4 @@
-"""Start page, export, fine-tuning controls, and scanability warnings."""
+"""Start page, export, advanced settings, and scanability warnings."""
 import datetime
 import io
 import json
@@ -143,10 +143,30 @@ class FineTuningTests(unittest.TestCase):
         app.run()
         app.run()
         self.assertEqual(app.session_state["qr_left_offset_slider"], 5)
-        app.toggle(key="show_fine_tuning_toggle").set_value(True).run()
+        app.toggle(key="show_advanced_toggle").set_value(True).run()
         self.assertEqual(app.slider(key="qr_left_offset_slider").value, 5)
         row_height = next(slider for slider in app.slider if slider.label == "Row height factor")
         self.assertEqual(row_height.value, 1.2)
+
+
+    def test_border_and_wrap_tags_are_advanced_settings(self):
+        app = open_designer("Label printer example")
+        expanders = lambda: [expander.label for expander in app.expander]
+        self.assertFalse(any(box.label == "Show label border" for box in app.checkbox))
+        self.assertNotIn("Wrap tag / tear-off", expanders())
+        self.assertTrue(app.session_state["show_border_check"])
+        app.toggle(key="show_advanced_toggle").set_value(True).run()
+        self.assertIn("Wrap tag / tear-off", expanders())
+        app.checkbox(key="show_border_check").uncheck().run()
+        app.toggle(key="show_advanced_toggle").set_value(False).run()
+        app.run()
+        self.assertFalse(app.session_state["show_border_check"])  # Hidden, still applied.
+
+    def test_wrap_tag_section_shows_while_a_wrap_tag_is_in_use(self):
+        app = open_designer("Label printer example")
+        app.session_state["wrap_enabled_check"] = True
+        app.run()
+        self.assertIn("Wrap tag / tear-off", [expander.label for expander in app.expander])
 
 
 class ScanabilityTests(unittest.TestCase):
