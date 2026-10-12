@@ -69,11 +69,3 @@ The **app version** reflects the overall release of PlantID Label Designer. The 
 ```
 
 Sizes are in millimetres. `label.preset` and `printer.sheet_stock` name a built-in preset, or are `null` for a custom size or spacing; the page size, margins and gaps are always saved so a sheet layout still prints if a preset is renamed. See [`example_layout.json`](PlantID-LabelDesigner-streamlit/example_layout.json) and [`example_sheet_layout.json`](PlantID-LabelDesigner-streamlit/example_sheet_layout.json) for complete files, and [`layout_schema.py`](PlantID-LabelDesigner-streamlit/layout_schema.py) for every field.
-
-### Gemplers loop-lock sheet tags
-
-Choose **Gemplers 151062 Loop-Lock 11 x 1 in (1 x 8)** under **Sheet printer → Sheet stock preset**, or search **Gemplers** in the label preset browser. The preset uses landscape Letter paper, eight 11 × 1-inch strips, ¼-inch top/bottom margins, and no gaps. These dimensions come from the [product specifications](https://gemplers.com/products/laser-strip-loop-lock-tags-11-quot-x-1-quot) and its linked Word template.
-
-Selecting this stock enables **Wrap tag / tear-off**. The right-hand tab defaults to 2¼ inches (57.15 mm). Its displayed fields follow the main tag, and its QR/barcode uses the main tag's code data. Check **Customize tear-off fields** to choose a different set (or no text), or uncheck **Use main tag code data** to encode another column. Code type, size, position, font size, field names, and padding are adjustable independently.
-
-The default blank loop area is 4 inches (101.6 mm), following the supplier's main-text template; adjust it to align the main code/text with your particular cutouts. Main content is clipped to its section and tear-off text wraps/shrinks to fit. All settings are saved in layout JSON. Print at **100% / actual size** and check alignment on plain paper against your stock before a production run.

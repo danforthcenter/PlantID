@@ -1823,11 +1823,9 @@ if active_sheet_preset:
 for key in ADVANCED_KEYS:
     if key in st.session_state:
         st.session_state[key] = st.session_state[key]
-show_advanced = st.sidebar.toggle(
-    "Show advanced settings", key="show_advanced_toggle",
-    help="Label border, row spacing, offsets, and wrap tags with a tear-off section — "
-         "adjustments that most labels don't need.",
-)
+# The toggle is drawn below the sections; its state from the last interaction
+# decides which controls they show.
+show_advanced = st.session_state.get("show_advanced_toggle", False)
 
 # 1. Data Fields
 with st.sidebar.expander("Data Fields", expanded=True):
@@ -2181,8 +2179,8 @@ with st.sidebar.expander("Code Settings", expanded=False):
 # 4. Design & Aesthetics
 with st.sidebar.expander("Design & Aesthetics", expanded=False):
     st.caption(
-        "Adjust the appearance of each label. Turn on **Show advanced settings** at the top "
-        "of the sidebar for the label border, spacing, and offset adjustments."
+        "Adjust the appearance of each label. Turn on **Show advanced settings** at the bottom "
+        "of the sidebar sections for the label border, spacing, and offset adjustments."
     )
     ensure_bool("show_border_check", TEMPLATE_DEFAULTS["show_border_check"])
     show_border = st.session_state["show_border_check"]
@@ -2389,6 +2387,12 @@ if show_advanced or st.session_state.get("wrap_enabled_check"):
             ensure_float_range("wrap_font_size_input", 7.0, 4.0, 36.0)
             st.number_input("Tear-off font size (pt)", min_value=4.0, max_value=36.0, step=0.5, key="wrap_font_size_input")
             st.caption("Identifier text wraps and shrinks to fit. The main label is confined to the space between the loop area and the tear-off.")
+
+st.sidebar.toggle(
+    "Show advanced settings", key="show_advanced_toggle",
+    help="Label border, row spacing, offsets, and wrap tags with a tear-off section — "
+         "adjustments that most labels don't need.",
+)
 
 tear_main_code_column = st.session_state.get("code_column_select", default_code_column)
 if tear_main_code_column not in _all_active_columns:
