@@ -6,6 +6,8 @@ import unittest
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
+from layout_schema import read_layout_file
+
 
 ROOT = Path(__file__).resolve().parent
 
@@ -14,7 +16,7 @@ class LayoutStateTests(unittest.TestCase):
     def setUp(self):
         self.app = AppTest.from_file(str(ROOT / 'streamlit_app.py'), default_timeout=20)
         self.app.session_state['df'] = pd.DataFrame({'PlantID': ['Plant_1']})
-        settings = json.loads((ROOT / 'example_sheet_layout.json').read_text())['settings']
+        settings = read_layout_file(json.loads((ROOT / 'example_sheet_layout.json').read_text()))[0]
         for key, value in settings.items():
             self.app.session_state[key] = value
         self.app.run()

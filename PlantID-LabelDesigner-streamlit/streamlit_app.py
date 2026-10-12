@@ -9,6 +9,19 @@ import pypdfium2 as pdfium
 from fractions import Fraction
 from row_selection import build_selection_table, selected_data
 from data_loading import read_label_csv
+from layout_schema import (
+    LABEL_PRINTER_PAGE_FORMAT,
+    LABEL_SIZE_CUSTOM,
+    LABEL_SIZE_PRESET,
+    PRINTER_TYPE_LABEL,
+    PRINTER_TYPE_SHEET,
+    SCHEMA_VERSION,
+    SHEET_SETUP_CUSTOM,
+    SHEET_SETUP_PRESET,
+    build_layout_file,
+    read_layout_file,
+    referenced_columns,
+)
 
 from reportlab.lib.pagesizes import mm, A4, letter
 from reportlab.pdfgen import canvas
@@ -60,18 +73,11 @@ if "uploaded_csv_name" not in st.session_state:
 
 APP_NAME = "PlantID Label Designer"
 APP_VERSION = "0.10"
-TEMPLATE_VERSION = 0
+TEMPLATE_VERSION = SCHEMA_VERSION
 
-PRINTER_TYPE_SHEET = "Sheet printer"
-PRINTER_TYPE_LABEL = "Label printer"
 PRINTER_TYPE_OPTIONS = [PRINTER_TYPE_SHEET, PRINTER_TYPE_LABEL]
-SHEET_SETUP_PRESET = "Sheet stock preset"
-SHEET_SETUP_CUSTOM = "Custom Sheet spacing"
 SHEET_SETUP_OPTIONS = [SHEET_SETUP_PRESET, SHEET_SETUP_CUSTOM]
 SHEET_PAGE_FORMAT_OPTIONS = ["A4", "A4 Landscape", "Letter", "Letter Landscape"]
-LABEL_PRINTER_PAGE_FORMAT = "LabelPrinter"
-LABEL_SIZE_CUSTOM = "Custom Size"
-LABEL_SIZE_PRESET = "Preset size"
 LABEL_SIZE_MODE_OPTIONS = [LABEL_SIZE_CUSTOM, LABEL_SIZE_PRESET]
 FILTER_MATCH_ALL = "Match all filters"
 FILTER_MATCH_ANY = "Match any filter"
@@ -214,21 +220,13 @@ def build_template_payload(label_width_mm=None, label_height_mm=None):
         settings["label_height_mm_slider"] = round(height_mm, 2)
         settings["label_width_in_slider"] = round(width_mm / 25.4, 3)
         settings["label_height_in_slider"] = round(height_mm / 25.4, 3)
-    return {
-        "template_version": TEMPLATE_VERSION,
-        "app": APP_NAME,
-        "app_version": APP_VERSION,
-        "settings": settings,
-    }
+    return build_layout_file(settings, APP_NAME, APP_VERSION)
 
 
 def apply_template_payload(parsed, filename="template.json", fill_missing_defaults=False):
-    if not isinstance(parsed, dict):
-        return None, "Template must be a JSON object."
-
-    settings = parsed.get("settings", parsed)
-    if not isinstance(settings, dict):
-        return None, "Template settings must be a JSON object."
+    settings, schema_version, error = read_layout_file(parsed)
+    if error:
+        return None, error
 
     applied = {}
     for key in TEMPLATE_DEFAULTS:
@@ -278,7 +276,8 @@ def apply_template_payload(parsed, filename="template.json", fill_missing_defaul
         "filename": filename,
         "app_name": parsed.get("app", APP_NAME),
         "app_version": parsed.get("app_version", "Not recorded"),
-        "template_version": parsed.get("template_version", "Not recorded"),
+        "template_version": schema_version,
+        "columns": referenced_columns(settings),
     }
 
     for key in list(st.session_state.keys()):
@@ -365,29 +364,17 @@ def render_version_footer():
     )
 
     version_notes = []
-    loaded_app_version = loaded_template.get("app_version")
     loaded_template_version = loaded_template.get("template_version")
-
-    if loaded_app_version in (None, "", "Not recorded"):
-        version_notes.append("The loaded template does not record an app version.")
-    elif loaded_app_version != APP_VERSION:
+    if isinstance(loaded_template_version, int) and loaded_template_version > TEMPLATE_VERSION:
         version_notes.append(
-            f"The loaded template was saved with app version {loaded_app_version}, "
-            f"which differs from this app version {APP_VERSION}."
+            "The loaded layout uses a newer schema than this app, so some settings may not load. "
+            "Update the app to use it fully."
         )
-
-    if isinstance(loaded_template_version, int):
-        if loaded_template_version > TEMPLATE_VERSION:
-            version_notes.append(
-                "The loaded template uses a newer JSON schema than this app, so some settings may not load."
-            )
-        elif loaded_template_version < TEMPLATE_VERSION:
-            version_notes.append(
-                "The loaded template uses an older JSON schema than this app."
-            )
-    elif loaded_template_version not in (None, "", "Not recorded"):
-        version_notes.append("The loaded template uses an unrecognized JSON schema value.")
-
+    elif isinstance(loaded_template_version, int) and loaded_template_version < TEMPLATE_VERSION:
+        version_notes.append(
+            f"The loaded layout was converted from schema v{loaded_template_version}. "
+            "Save it again to update the file."
+        )
     if version_notes:
         st.caption("Version note: " + " ".join(version_notes))
 
@@ -1257,9 +1244,9 @@ def draw_label_on_canvas(
 
             if stacked_barcode:
                 code_y = stacked_code_y
-                code_x = (x + lw_pt - pad_pt - bw_pt - qr_left_offset * mm
+                code_x = (x + lw_pt - bw_pt - qr_left_offset * mm
                           if code_position == "Right" else
-                          x + side_col_width + pad_pt + qr_left_offset * mm)
+                          x + side_col_width + qr_left_offset * mm)
             elif code_position == "Right":
                 code_x = x + lw_pt - bw_pt - (qr_left_offset * mm)
                 text_right = code_x - 2 * mm
@@ -2472,6 +2459,19 @@ with summary_container:
     c1.metric("Original Rows", len(st.session_state.df))
     c2.metric("Filtered Rows", len(filtered_df))
     c3.metric("Data Source", st.session_state.data_source)
+
+    loaded_layout = st.session_state.get("loaded_template_metadata") or {}
+    missing_columns = [(description, column) for description, column in loaded_layout.get("columns", [])
+                       if column not in _all_active_columns]
+    if missing_columns and not loaded_layout.get("columns_dismissed"):
+        warning_col, dismiss_col = st.columns([6, 1], vertical_alignment="center")
+        warning_col.warning(
+            "The loaded layout refers to columns that are not in this dataset, so defaults are used for them: "
+            + "; ".join(f"{column} ({description})" for description, column in missing_columns) + "."
+        )
+        if dismiss_col.button("Dismiss", key="dismiss_missing_columns_btn"):
+            loaded_layout["columns_dismissed"] = True
+            st.rerun()
 
     if not filtered_df.empty and not wrap_error:
         if not barcode_layout_fits:

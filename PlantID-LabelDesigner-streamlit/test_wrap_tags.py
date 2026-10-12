@@ -6,6 +6,8 @@ import pandas as pd
 import pypdfium2 as pdfium
 from streamlit.testing.v1 import AppTest
 
+from layout_schema import read_layout_file
+
 from label_presets import GEMPLERS_SHEET_NAME, SHEET_STOCK_PRESET_BY_NAME
 import test_layout_state
 from wrap_tags import WRAP_DEFAULTS, wrap_config, wrap_layout_error
@@ -40,7 +42,7 @@ class WrapTagTests(unittest.TestCase):
         self.data = pd.DataFrame({'PlantID': [f'PLANT-{i:03}' for i in range(1, 10)],
                                   'Genotype': ['Iran5'] * 9, 'Plot': ['177'] * 9})
         self.app.session_state['df'] = self.data
-        settings = json.loads((ROOT / 'example_sheet_layout.json').read_text())['settings']
+        settings = read_layout_file(json.loads((ROOT / 'example_sheet_layout.json').read_text()))[0]
         settings.update(visible_columns_multiselect=['PlantID', 'Genotype', 'Plot'],
                         highlight_column_select='None', label_font_size_slider=7)
         for key, value in settings.items():
