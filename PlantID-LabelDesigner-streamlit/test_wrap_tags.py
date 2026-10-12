@@ -95,7 +95,8 @@ class WrapTagTests(unittest.TestCase):
     def test_default_fields_follow_main_and_custom_fields_are_independent(self):
         self.assertFalse(self.app.session_state['wrap_custom_fields_check'])
         self.assertTrue(self.app.session_state['wrap_use_main_code_check'])
-        self.assertEqual(wrap_config(self.app.session_state, ['Plot'], 'PlantID')['columns'], ['Plot'])
+        self.assertEqual(wrap_config({key: self.app.session_state[key] for key in WRAP_DEFAULTS
+                                     if key in self.app.session_state}, ['Plot'], 'PlantID')['columns'], ['Plot'])
         main_fields = next(widget for widget in self.app.multiselect if widget.label == 'Columns to display')
         main_fields.set_value(['Plot', 'Genotype']).run()
         with pdfium.PdfDocument(self.app.session_state['_pdf_bytes']) as pdf:
