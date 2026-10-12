@@ -7,6 +7,9 @@ from reportlab.graphics.shapes import Drawing
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.lib.utils import simpleSplit
 
+# Level M recovers from about 15% damage, for tags handled in greenhouses and fields.
+QR_ERROR_CORRECTION = 'M'
+
 WRAP_DEFAULTS = {
     'wrap_enabled_check': False,
     'wrap_leader_mm_input': 101.6,
@@ -96,7 +99,7 @@ def draw_tear_off(c, row, x, y, height, config, font='Helvetica', labels=None, b
         code_x = left if config['position'] == 'Left' else right - code_w
         code_y = y + (height * mm - code_h) / 2
         if is_qr:
-            obj = qr.QrCodeWidget(value)
+            obj = qr.QrCodeWidget(value, barLevel=QR_ERROR_CORRECTION)
             bounds = obj.getBounds()
             scale = code_w / (bounds[2] - bounds[0])
             drawing = Drawing(code_w, code_h, transform=[scale, 0, 0, scale, 0, 0])

@@ -28,7 +28,13 @@ Run the app locally:
 ```bash
 streamlit run streamlit_app.py
 ```
-Upload a CSV with your plant metadata. Configure label settings. Download the PDF for printing.
+## Using the app
+
+1. **Choose your data**: upload a CSV or Excel (`.xlsx`) file with one row per plant or sample, or try the example dataset. Values are printed exactly as written, so IDs such as `00123` keep their leading zeros.
+2. **Choose a label design**: start from defaults, one of the examples, or a layout file you saved earlier.
+3. **Design** the label in the sidebar while watching the live preview. Spacing and offset adjustments are under **Show fine-tuning controls**. The app warns when text does not fit or a QR code or barcode is too small to scan reliably.
+4. **Select rows** to print using row ranges, filters, and the Print checkboxes.
+5. **Export**: choose a label printer or sheet stock and click **Download labels PDF**. For sheets, preview the first page and print the **alignment test page** on plain paper to check alignment against your stock first. Always print at 100% / actual size.
 
 ## Versioning
 

@@ -118,8 +118,10 @@ class WrapTagTests(unittest.TestCase):
         self.app.number_input(key='wrap_tear_width_mm_input').set_value(250.0).run()
         self.assertFalse(self.app.exception)
         self.assertTrue(any('leave room' in error.value for error in self.app.error))
-        next(button for button in self.app.button if button.label == 'Generate Multi-Label PDF').click().run()
-        self.assertTrue(any('Cannot generate PDF' in error.value for error in self.app.error))
+        self.assertTrue(any('Cannot export' in error.value for error in self.app.error))
+        downloads = [button.proto.label for button in self.app.get('download_button')]
+        self.assertNotIn('Download labels PDF', downloads)
+        self.assertIn('Download alignment test page', downloads)
 
     def test_direct_sheet_selection_enables_wrap(self):
         self.app.checkbox(key='wrap_enabled_check').uncheck().run()
