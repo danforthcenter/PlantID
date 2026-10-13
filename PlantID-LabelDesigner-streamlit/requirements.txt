@@ -1,8 +1,6 @@
-streamlit
-pandas
-numpy
-reportlab
-qrcode
-pillow
-pypdfium2
-openpyxl
+streamlit==1.56.0
+pandas==2.3.2
+reportlab==4.4.10
+pypdfium2==5.7.0
+pillow==11.3.0
+openpyxl==3.1.5

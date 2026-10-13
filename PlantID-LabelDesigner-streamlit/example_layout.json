@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app": "PlantID Label Designer",
-  "app_version": "0.10",
+  "app_version": "1.0.0",
   "layout": {
     "data": {
       "fields": [
