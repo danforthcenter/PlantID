@@ -118,7 +118,9 @@ def main():
                  "One spreadsheet row per plant becomes a printable label — any size, any fields, "
                  "QR code or barcode, label printer or sheet stock.")
 
-    spreadsheet_row(c, 10.3, 143, PLANT, [62, 34, 22, 22, 26])
+    # The pot and bag labels call this column "Plant" and the others "Plot", so the header shows both.
+    header = {("Plant/Plot" if column == "Plot" else column): value for column, value in PLANT.items()}
+    spreadsheet_row(c, 10.3, 143, header, [62, 34, 22, 22, 26])
     c.setFillColor(MUTED)
     c.setFont("Helvetica-Oblique", 8)
     c.drawString(181 * mm, 133.2 * mm, "→  this row, as each label below")
@@ -150,17 +152,19 @@ def main():
             "11 × 1 in loop-lock strip · blank loop area · tear-off repeats the code and key fields")
 
     # Greenhouse pot label: a large QR code beside four evenly spaced fields.
-    label(c, PLANT, 10.3, 32, 76.2, 38.1, ["Experiment", "Plot", "Geno", "Treatment"],
+    # Pot and bag labels each hold a single plant, so they name the field "Plant" rather than "Plot".
+    plant = {**PLANT, "Plant": PLANT["Plot"]}
+    label(c, plant, 10.3, 32, 76.2, 38.1, ["Experiment", "Plant", "Geno", "Treatment"],
           qr_size=28, qr_left_offset=4, padding=4.5, label_font_size=9, row_height_factor=0.98,
-          col_name_width_ratio=0.43, highlight_column="Plot")
+          col_name_width_ratio=0.43, highlight_column="Plant")
     caption(c, 10.5, 24, "Greenhouse pot label", "QR code beside four fields · 3 × 1.5 in")
 
-    # Sample tray label: barcode with the plot above and the rest below.
-    label(c, PLANT, 99, 32, 101.6, 38.1, ["Plot", "Geno", "Treatment"], code_type="Barcode",
+    # Sample bag label: barcode with the plant above and the rest below.
+    label(c, plant, 99, 32, 101.6, 38.1, ["Plant", "Geno", "Treatment"], code_type="Barcode",
           barcode_width=82, barcode_height=12, barcode_text_position="Above and below barcode",
-          barcode_above_columns=["Plot"], label_font_size=8, padding=2, qr_left_offset=9.8,
-          highlight_column="Plot", col_name_width_ratio=0.45)
-    caption(c, 99, 24, "Sample tray label", "Code 128 barcode with fields above and below · 4 × 1.5 in")
+          barcode_above_columns=["Plant"], label_font_size=8, padding=2, qr_left_offset=9.8,
+          highlight_column="Plant", col_name_width_ratio=0.45)
+    caption(c, 99, 24, "Sample bag label", "Code 128 barcode with fields above and below · 4 × 1.5 in")
 
     # Cryovial / microtube labels: each tube shows a different choice of fields.
     tube_designs = (
