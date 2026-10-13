@@ -30,6 +30,13 @@ Run the app locally:
 ```bash
 streamlit run streamlit_app.py
 ```
+
+Run the tests:
+```bash
+pip install pytest
+pytest
+```
+
 ## Using the app
 
 1. **Choose your data**: upload a CSV or Excel (`.xlsx`) file with one row per plant or sample, or try the example dataset. Values are printed exactly as written, so IDs such as `00123` keep their leading zeros.
@@ -42,10 +49,10 @@ streamlit run streamlit_app.py
 
 | Version | Current |
 |---|---|
-| App | 0.10 |
+| App | 1.0.0 |
 | Layout schema | 1 |
 
-The **app version** reflects the overall release of PlantID Label Designer. The **layout schema version** tracks the structure of saved layout `.json` files and only increments when the format changes in a way older apps cannot read. Layouts saved with an older schema are converted automatically when loaded; save them again to update the file. The app warns if a layout uses a newer schema than it supports.
+The **app version** follows [semantic versioning](https://semver.org); changes are listed in the [changelog](CHANGELOG.md). The **layout schema version** tracks the structure of saved layout `.json` files and only increments when the format changes in a way older apps cannot read. Layouts saved with an older schema are converted automatically when loaded; save them again to update the file. The app warns if a layout uses a newer schema than it supports.
 
 ## Layout files
 
@@ -55,7 +62,7 @@ The **app version** reflects the overall release of PlantID Label Designer. The 
 {
   "schema_version": 1,
   "app": "PlantID Label Designer",
-  "app_version": "0.10",
+  "app_version": "1.0.0",
   "layout": {
     "data": { "fields": ["Plant", "Geno"], "field_labels_enabled": false, "field_labels": {}, "split": { "enabled": false, ... } },
     "label": { "preset": "PR1MA 85 Tag", "width_mm": 33.0, "height_mm": 13.0, "display_units": "mm", "padding_mm": 2, "border": true },
@@ -71,3 +78,15 @@ The **app version** reflects the overall release of PlantID Label Designer. The 
 ```
 
 Sizes are in millimetres. `label.preset` and `printer.sheet_stock` name a built-in preset, or are `null` for a custom size or spacing; the page size, margins and gaps are always saved so a sheet layout still prints if a preset is renamed. See [`example_layout.json`](PlantID-LabelDesigner-streamlit/example_layout.json) and [`example_sheet_layout.json`](PlantID-LabelDesigner-streamlit/example_sheet_layout.json) for complete files, and [`layout_schema.py`](PlantID-LabelDesigner-streamlit/layout_schema.py) for every field.
+
+## How to cite
+
+If you use PlantID in your research, please cite:
+
+> Griffiths, M. and Murphy, K. M. PlantID: A Flexible Unique Identifier Framework for Plant Phenotyping. *International Journal of Phenomics* (in press).
+
+GitHub's **Cite this repository** button provides this in APA and BibTeX formats from [`CITATION.cff`](CITATION.cff).
+
+## License
+
+PlantID Label Designer is released under the [Mozilla Public License 2.0](LICENSE).

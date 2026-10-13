@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use PlantID in your research, please cite the paper below."
+title: "PlantID Label Designer"
+abstract: "A Streamlit web application for designing and printing plant sample labels with QR codes or barcodes from a spreadsheet of unique plant identifiers."
+type: software
+version: 1.0.0
+license: MPL-2.0
+repository-code: "https://github.com/danforthcenter/PlantID"
+url: "https://plantid-label-designer.streamlit.app"
+keywords:
+  - plant phenotyping
+  - unique identifiers
+  - QR code
+  - barcode
+  - labels
+authors:
+  - family-names: Griffiths
+    given-names: Marcus
+  - family-names: Murphy
+    given-names: Katherine M.
+preferred-citation:
+  type: article
+  title: "PlantID: A Flexible Unique Identifier Framework for Plant Phenotyping"
+  authors:
+    - family-names: Griffiths
+      given-names: Marcus
+    - family-names: Murphy
+      given-names: Katherine M.
+  journal: "International Journal of Phenomics"
+  status: in-press

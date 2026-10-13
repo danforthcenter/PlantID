@@ -60,7 +60,11 @@ if "layout_widget_generation" not in st.session_state:
     st.session_state.layout_widget_generation = 0
 
 APP_NAME = "PlantID Label Designer"
-APP_VERSION = "0.10"
+APP_VERSION = "1.0.0"
+CITATION = (
+    "Griffiths, M. and Murphy, K. M. PlantID: A Flexible Unique Identifier Framework for "
+    "Plant Phenotyping. International Journal of Phenomics (in press)."
+)
 TEMPLATE_VERSION = SCHEMA_VERSION
 
 PRINTER_TYPE_OPTIONS = [PRINTER_TYPE_SHEET, PRINTER_TYPE_LABEL]
@@ -325,6 +329,7 @@ def render_version_footer():
         "Source code and documentation: [github.com/danforthcenter/PlantID](https://github.com/danforthcenter/PlantID) "
         "— can be run locally if downloaded."
     )
+    st.caption(f"If you use PlantID in your research, please cite: {CITATION}")
 
     if not loaded_template:
         return
