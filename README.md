@@ -11,7 +11,7 @@ Try the app directly without installation
 https://plantid-label-designer.streamlit.app
 
 
-<img width="586" height="368" alt="Screenshot 2026-04-13 at 11 32 04" src="https://github.com/user-attachments/assets/b937336e-6740-48e7-ad65-1a57c7b8729d" />
+<img width="732" height="460" alt="Screenshot 2026-04-13 at 11 32 04" src="https://github.com/user-attachments/assets/b937336e-6740-48e7-ad65-1a57c7b8729d" />
 
 
 ## Installation (Local)
