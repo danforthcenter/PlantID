@@ -177,6 +177,8 @@ def clear_layout_settings_state():
     for key in list(st.session_state.keys()):
         if str(key).startswith("column_label_override_"):
             st.session_state[key] = ""
+        elif str(key).startswith("column_label_hide_"):
+            st.session_state[key] = False
 
 
 def clear_layout_settings_state_if_requested():
@@ -258,12 +260,13 @@ def apply_template_payload(parsed, filename="template.json", fill_missing_defaul
     }
 
     for key in list(st.session_state.keys()):
-        if str(key).startswith("column_label_override_"):
+        if str(key).startswith(("column_label_override_", "column_label_hide_")):
             del st.session_state[key]
 
     if isinstance(st.session_state.get("column_label_overrides"), dict):
         for column, label in st.session_state["column_label_overrides"].items():
             st.session_state[f"column_label_override_{column}"] = label
+            st.session_state[f"column_label_hide_{column}"] = label == ""
 
     if "label_width_mm_slider" in applied and "label_height_mm_slider" in applied:
         try:
@@ -1160,18 +1163,19 @@ def draw_label_on_canvas(
         font_size = label_font_size
 
         val_w = stringWidth(value, font_variant(label_font, "bold"), font_size) + highlight_padding
-        nam_w = stringWidth(f"{col_name}:", font_variant(label_font, "italic"), font_size)
-        gap = 1 * mm
+        nam_w = stringWidth(f"{col_name}:", font_variant(label_font, "italic"), font_size) if col_name else 0
+        gap = 1 * mm if col_name else 0
         total_h = nam_w + gap + val_w
         sidebar_bottom = y + (lh_pt - total_h) / 2
 
-        c.saveState()
-        c.setFillColor(colors.black)
-        c.setFont(font_variant(label_font, "italic"), font_size)
-        c.translate(x + side_col_width / 2, sidebar_bottom + nam_w / 2)
-        c.rotate(90)
-        c.drawCentredString(0, 0, f"{col_name}:")
-        c.restoreState()
+        if col_name:
+            c.saveState()
+            c.setFillColor(colors.black)
+            c.setFont(font_variant(label_font, "italic"), font_size)
+            c.translate(x + side_col_width / 2, sidebar_bottom + nam_w / 2)
+            c.rotate(90)
+            c.drawCentredString(0, 0, f"{col_name}:")
+            c.restoreState()
 
         val_rect_y = sidebar_bottom + nam_w + gap
         is_white_strip = highlight_color == colors.white
@@ -1296,13 +1300,14 @@ def draw_label_on_canvas(
                 f"{display_name}:", font_variant(label_font, "italic"), label_font_size)
             if (value_left + stringWidth(val, value_font, label_font_size) > text_right + 0.01
                     # Names may use the 2 mm gutter beside the code.
-                    or (show_column_names and name_left < text_x - 2 * mm)
+                    or (show_column_names and display_name and name_left < text_x - 2 * mm)
                     or y_pos - 0.25 * label_font_size < y
                     or y_pos + 0.75 * label_font_size > y + lh_pt):
-                overflow.add(display_name)
+                overflow.add(display_name or col_name)
 
         c.saveState()
-        if show_column_names:
+        # A blank display name (renamed to nothing) prints the value alone.
+        if show_column_names and display_name:
             c.setFont(font_variant(label_font, "italic"), label_font_size)
             c.setFillColor(colors.black)
             c.drawRightString(name_right_x, y_pos, f"{display_name}:")
@@ -2328,14 +2333,28 @@ with st.sidebar.expander("Design & Aesthetics", expanded=False):
         column_label_overrides = dict(st.session_state.get("column_label_overrides", {}))
         for column in visible_columns:
             override_key = f"column_label_override_{column}"
+            hide_key = f"column_label_hide_{column}"
             if override_key not in st.session_state:
                 st.session_state[override_key] = column_label_overrides.get(column, "")
-            override_value = st.text_input(
-                f"Display label for {column}",
-                key=override_key,
-                placeholder=column,
-            ).strip()
-            if override_value and override_value != column:
+            if hide_key not in st.session_state:
+                st.session_state[hide_key] = column_label_overrides.get(column) == ""
+            label_col, hide_col = st.columns([3, 1], vertical_alignment="bottom")
+            with hide_col:
+                hide_name = st.checkbox("Hide", key=hide_key,
+                    help=f"Print no name for {column} — only its value.")
+            with label_col:
+                raw_override = st.text_input(
+                    f"Display label for {column}",
+                    key=override_key,
+                    placeholder="(no name)" if hide_name else column,
+                    disabled=hide_name,
+                )
+            override_value = raw_override.strip()
+            # An empty override means "no name"; a space typed into the box
+            # asks for the same thing.
+            if hide_name or (raw_override and not override_value):
+                column_label_overrides[column] = ""
+            elif override_value and override_value != column:
                 column_label_overrides[column] = override_value
             else:
                 column_label_overrides.pop(column, None)

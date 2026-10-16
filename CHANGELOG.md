@@ -2,6 +2,11 @@
 
 All notable changes to PlantID Label Designer are listed here. The app follows [semantic versioning](https://semver.org). Saved layout files have their own [schema version](README.md#versioning).
 
+## Unreleased
+
+### Added
+- **Rename displayed columns** can now leave a column's name blank, so only its value is printed: tick **Hide** beside the column, or type a space as its label.
+
 ## 1.0.0
 
 First stable release, accompanying the PlantID paper in the *International Journal of Phenomics*.

@@ -118,7 +118,8 @@ def draw_tear_off(c, row, x, y, height, config, font='Helvetica', labels=None, b
         else:
             right -= code_w + 2 * mm
     labels = labels or {}
-    texts = [(f'{labels.get(col, col)}: ' if config['show_names'] else '') + str(row[col])
+    texts = [(f'{labels.get(col, col)}: ' if config['show_names'] and labels.get(col, col) else '')
+             + str(row[col])
              for col in config['columns']]
     if texts:
         available_w, available_h = right - left, height * mm - 2 * padding

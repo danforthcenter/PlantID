@@ -149,6 +149,19 @@ class FineTuningTests(unittest.TestCase):
         self.assertEqual(row_height.value, 1.2)
 
 
+    def test_a_column_name_can_be_left_blank(self):
+        app = start_app()
+        app.radio(key="start_data_choice").set_value("Use the example dataset").run()
+        app.button(key="start_go_btn").click().run()
+        app.checkbox(key="rename_columns_check").check().run()
+        hide_keys = [box.key for box in app.checkbox if box.key.startswith("column_label_hide_")]
+        first, second = (key.removeprefix("column_label_hide_") for key in hide_keys[:2])
+        app.checkbox(key=f"column_label_hide_{first}").check().run()
+        app.text_input(key=f"column_label_override_{second}").input(" ").run()
+        assert not app.exception, app.exception
+        self.assertEqual(app.session_state["column_label_overrides"], {first: "", second: ""})
+        self.assertTrue(app.text_input(key=f"column_label_override_{first}").disabled)
+
     def test_border_and_wrap_tags_are_advanced_settings(self):
         app = open_designer("Label printer example")
         expanders = lambda: [expander.label for expander in app.expander]
