@@ -98,6 +98,23 @@ class DrawingTests(unittest.TestCase):
         _, right = ink_extent_mm(results["too_long"][0])
         self.assertLessEqual(right, 35.1)
 
+    def test_blank_column_name_prints_the_value_alone(self):
+        base = dict(visible_columns=["Date", "PlantID"], code_column=None, code_type="None",
+                    label_width=70, label_height=35, show_column_names=True,
+                    row={"Date": "2026-10-16", "PlantID": "P1"})
+        results = render({
+            "named": base,
+            "blank": {**base, "column_label_map": {"Date": "", "PlantID": "PlantID"}},
+        })
+        def text(pdf_bytes):
+            return pdfium.PdfDocument(pdf_bytes)[0].get_textpage().get_text_range()
+        self.assertIn("Date:", text(results["named"][0]))
+        blank_text = text(results["blank"][0])
+        self.assertNotIn("Date", blank_text)
+        self.assertEqual(blank_text.count(":"), 1)
+        self.assertIn("2026-10-16", blank_text)
+        self.assertEqual(results["blank"][1], set())
+
 
 if __name__ == "__main__":
     unittest.main()
