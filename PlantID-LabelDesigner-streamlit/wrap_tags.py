@@ -1,14 +1,14 @@
 """Geometry and rendering for the detachable end of a wrap tag (millimetres)."""
 from reportlab.lib import colors
 from reportlab.lib.units import mm
-from reportlab.graphics.barcode import qr, code128
+from reportlab.graphics.barcode import qr
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.lib.utils import simpleSplit
 
-# Level M recovers from about 15% damage, for tags handled in greenhouses and fields.
-QR_ERROR_CORRECTION = 'M'
+from code_checks import QR_ERROR_CORRECTION, draw_code_placeholder
+from barcodes import DEFAULT_PRINTER_DPI, barcode_width_mm, draw_code128, reliable_bar_mm
 
 WRAP_DEFAULTS = {
     'wrap_enabled_check': False,
@@ -20,7 +20,6 @@ WRAP_DEFAULTS = {
     'wrap_custom_fields_check': False,
     'wrap_use_main_code_check': True,
     'wrap_qr_size_mm_input': 16.0,
-    'wrap_barcode_width_mm_input': 30.0,
     'wrap_barcode_height_mm_input': 12.0,
     'wrap_code_position_select': 'Left',
     'wrap_padding_mm_input': 2.0,
@@ -29,13 +28,15 @@ WRAP_DEFAULTS = {
 }
 
 
-def wrap_config(state, main_columns=None, main_code_column=None):
+def wrap_config(state, main_columns=None, main_code_column=None, code_values=()):
+    """Tear-off settings; code_values sizes the barcode for the longest value."""
     columns = state.get('wrap_text_columns_multiselect') or []
     if not state.get('wrap_custom_fields_check', False) and main_columns is not None:
         columns = list(main_columns)
     code_column = state.get('wrap_code_column_select')
     if state.get('wrap_use_main_code_check', True) and main_code_column is not None:
         code_column = main_code_column
+    bar_mm = reliable_bar_mm(state.get('printer_dpi_select', DEFAULT_PRINTER_DPI))
     return {
         'enabled': state.get('wrap_enabled_check', False),
         'leader': state.get('wrap_leader_mm_input', 101.6),
@@ -44,7 +45,8 @@ def wrap_config(state, main_columns=None, main_code_column=None):
         'code_column': code_column,
         'columns': columns,
         'qr_size': state.get('wrap_qr_size_mm_input', 16.0),
-        'barcode_width': state.get('wrap_barcode_width_mm_input', 30.0),
+        'bar_mm': bar_mm,
+        'barcode_width': barcode_width_mm(code_values, bar_mm),
         'barcode_height': state.get('wrap_barcode_height_mm_input', 12.0),
         'position': state.get('wrap_code_position_select', 'Left'),
         'padding': state.get('wrap_padding_mm_input', 2.0),
@@ -65,8 +67,12 @@ def wrap_layout_error(config, label_width, label_height):
     if config['code_type'] != 'None':
         if not config['code_column']:
             return 'Choose a data column for the tear-off code.'
-        code_w = config['qr_size'] if config['code_type'] == 'QR' else config['barcode_width']
-        code_h = config['qr_size'] if config['code_type'] == 'QR' else config['barcode_height']
+        if config['code_type'] == 'QR':
+            code_w = code_h = config['qr_size']
+        else:
+            # Barcodes too long for the section are reported value by value by code_checks.
+            code_w = min(config['barcode_width'], width)
+            code_h = config['barcode_height']
         if min(code_w, code_h) <= 0 or code_h > height or code_w > width:
             return 'The tear-off code does not fit. Reduce its size or padding, or increase the section width.'
         if config['columns'] and width - code_w - 2 < 8:
@@ -96,9 +102,13 @@ def draw_tear_off(c, row, x, y, height, config, font='Helvetica', labels=None, b
         is_qr = config['code_type'] == 'QR'
         code_w = (config['qr_size'] if is_qr else config['barcode_width']) * mm
         code_h = (config['qr_size'] if is_qr else config['barcode_height']) * mm
+        if config.get('placeholder'):
+            code_w = min(code_w, right - left)
         code_x = left if config['position'] == 'Left' else right - code_w
         code_y = y + (height * mm - code_h) / 2
-        if is_qr:
+        if config.get('placeholder'):
+            draw_code_placeholder(c, code_x, code_y, code_w, code_h, config['placeholder'])
+        elif is_qr:
             obj = qr.QrCodeWidget(value, barLevel=QR_ERROR_CORRECTION)
             bounds = obj.getBounds()
             scale = code_w / (bounds[2] - bounds[0])
@@ -106,13 +116,7 @@ def draw_tear_off(c, row, x, y, height, config, font='Helvetica', labels=None, b
             drawing.add(obj)
             renderPDF.draw(drawing, c, code_x, code_y)
         else:
-            obj = code128.Code128(value, barHeight=code_h, humanReadable=False)
-            c.saveState()
-            c.setFillColor(colors.black)  # Bars use the current fill colour.
-            c.translate(code_x, code_y)
-            c.scale(code_w / obj.width, 1)
-            obj.drawOn(c, 0, 0)
-            c.restoreState()
+            draw_code128(c, value, code_x, code_y, code_w, code_h, config.get('bar_mm'), align=config['position'])
         if config['position'] == 'Left':
             left += code_w + 2 * mm
         else:

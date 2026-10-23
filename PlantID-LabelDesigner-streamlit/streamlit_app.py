@@ -7,7 +7,7 @@ import hashlib
 import pypdfium2 as pdfium
 
 from fractions import Fraction
-from row_selection import build_selection_table, selected_data
+from row_selection import apply_print_edits, build_selection_table, ticked_rows
 from data_loading import read_label_csv, read_label_table
 from layout_schema import (
     LABEL_PRINTER_PAGE_FORMAT,
@@ -27,10 +27,13 @@ from reportlab.lib.pagesizes import mm, A4, letter
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.graphics.barcode import qr
-from reportlab.graphics.barcode import code128
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
 from reportlab.pdfbase.pdfmetrics import stringWidth
+from barcodes import (
+    DEFAULT_PRINTER_DPI, PRINTER_DPI_OPTIONS, barcode_width_mm, draw_code128, reliable_bar_mm,
+)
+from code_checks import code_problems, draw_code_placeholder
 from wrap_tags import QR_ERROR_CORRECTION, WRAP_DEFAULTS, wrap_config, wrap_layout_error, clip_region, draw_tear_off
 
 from label_presets import (
@@ -110,9 +113,9 @@ TEMPLATE_DEFAULTS = {
     "code_column_select": None,
     "code_position_select": "Left",
     "qr_size_slider": 18,
-    "barcode_width_slider": 25,
+    "printer_dpi_select": DEFAULT_PRINTER_DPI,
     "barcode_height_slider": 10,
-    "barcode_text_position_select": "Beside barcode",
+    "barcode_text_position_select": "Above and below barcode",
     "barcode_above_columns_multiselect": [],
     "qr_left_offset_slider": 2,
     "show_column_names_check": True,
@@ -358,6 +361,24 @@ def render_version_footer():
         )
     if version_notes:
         st.caption("Version note: " + " ".join(version_notes))
+
+
+def set_rows_ticked(indexes, ticked):
+    unticked = set(st.session_state.get("print_unticked_rows", set()))
+    st.session_state["print_unticked_rows"] = unticked - set(indexes) if ticked else unticked | set(indexes)
+    st.session_state["print_editor_version"] = st.session_state.get("print_editor_version", 0) + 1
+
+
+def record_print_edits(editor_key, shown_rows, print_column):
+    st.session_state["print_unticked_rows"] = apply_print_edits(
+        st.session_state.get("print_unticked_rows", set()), shown_rows,
+        st.session_state[editor_key]["edited_rows"], print_column)
+
+
+def default_barcode_text_position():
+    """Switching to a barcode starts with fields above and below it."""
+    if st.session_state.get("code_type_select") == "Barcode":
+        st.session_state["barcode_text_position_select"] = TEMPLATE_DEFAULTS["barcode_text_position_select"]
 
 
 def ensure_choice(key, options, default):
@@ -721,20 +742,6 @@ def sheet_capacity(
     return max(0, columns), max(0, rows)
 
 
-# Two dots on a 203 dpi thermal printer; narrower bars scan unreliably.
-MIN_BARCODE_BAR_MM = 0.25
-
-
-def narrowest_barcode_bar_mm(values, width_mm):
-    """Bar (module) width of the longest Code 128 symbol drawn at width_mm."""
-    longest = sorted({str(value) for value in values}, key=len, reverse=True)[:50]
-    if not longest or width_mm <= 0:
-        return None
-    symbols = [code128.Code128(value, humanReadable=False) for value in longest]
-    modules = max(symbol.width / symbol.barWidth for symbol in symbols)
-    return width_mm / modules
-
-
 def overflow_message(fields, subject):
     rows_overlap = "text rows overlap" in fields
     names = sorted(field for field in fields if field != "text rows overlap")
@@ -746,36 +753,6 @@ def overflow_message(fields, subject):
         parts.append("Text rows overlap because the font is taller than the row spacing.")
     return " ".join(parts) + (" Reduce the font size or padding, shorten or hide fields, "
                               "or increase the label size or row height factor.")
-
-
-# Phone cameras and 203 dpi printers need modules of about three dots.
-MIN_QR_MODULE_MM = 0.35
-
-
-def qr_module_warning(values, size_mm, name="QR code"):
-    """Warn when the longest value's QR modules are too small to scan reliably."""
-    longest = max((str(value) for value in values), key=len, default=None)
-    if longest is None or size_mm <= 0:
-        return None
-    widget = qr.QrCodeWidget(longest, barLevel=QR_ERROR_CORRECTION)
-    widget.qr.make()
-    modules = widget.qr.getModuleCount() + 2 * widget.barBorder
-    module_mm = size_mm / modules
-    if module_mm < MIN_QR_MODULE_MM:
-        return (f"The {name}'s squares are {module_mm:.2f} mm for the longest value, which phone cameras "
-                f"and 203 dpi label printers may not handle reliably. Use a size of at least "
-                f"{modules * MIN_QR_MODULE_MM:.0f} mm or shorter code values.")
-    return None
-
-
-def barcode_bar_warning(values, width_mm, name="barcode"):
-    bar_mm = narrowest_barcode_bar_mm(values, width_mm)
-    if bar_mm is not None and bar_mm < MIN_BARCODE_BAR_MM:
-        needed = width_mm * MIN_BARCODE_BAR_MM / bar_mm
-        return (f"The {name}'s narrowest bars are {bar_mm:.2f} mm wide for the longest value, which many "
-                f"scanners and 203 dpi label printers cannot read reliably. Use a width of at least "
-                f"{needed:.0f} mm, a QR code, or shorter code values.")
-    return None
 
 
 def page_size_mm(page_format):
@@ -1096,9 +1073,13 @@ def draw_label_on_canvas(
     barcode_above_columns=None,
     wrap_tag=None,
     overflow=None,
+    barcode_bar_mm=None,
+    code_placeholder=None,
 ):
     """Draw one label. If `overflow` is a set, the display names of fields
-    that do not fit in the text area are added to it."""
+    that do not fit in the text area are added to it. With `barcode_bar_mm`
+    barcodes keep that bar width; otherwise they fill `barcode_width`.
+    With `code_placeholder` an outline with that text replaces the code."""
     wrap_active = wrap_tag and wrap_tag["enabled"]
     if wrap_active:
         error = wrap_layout_error(wrap_tag, label_width, label_height)
@@ -1237,13 +1218,17 @@ def draw_label_on_canvas(
             else:
                 code_x = x + side_col_width + (qr_left_offset * mm)
                 text_x = code_x + qr_pt + 2 * mm
-            renderPDF.draw(d, c, code_x, code_y)
+            if code_placeholder:
+                draw_code_placeholder(c, code_x, code_y, qr_pt, qr_pt, code_placeholder)
+            else:
+                renderPDF.draw(d, c, code_x, code_y)
 
         elif code_type == "Barcode":
             bw_pt = barcode_width * mm
             bh_pt = barcode_height * mm
+            if code_placeholder:
+                bw_pt = min(bw_pt, lw_pt - side_col_width - 2 * qr_left_offset * mm)
             code_y = y + (lh_pt - bh_pt) / 2
-            bc = code128.Code128(val, barHeight=bh_pt, humanReadable=False)
 
             if stacked_barcode:
                 code_y = stacked_code_y
@@ -1256,14 +1241,11 @@ def draw_label_on_canvas(
             else:
                 code_x = x + side_col_width + (qr_left_offset * mm)
                 text_x = code_x + bw_pt + 2 * mm
-            c.saveState()
-            c.setFillColor(colors.black)  # Bars use the current fill colour.
-            # Code128 includes quiet zones and checksum bars in its actual width,
-            # so scale the whole symbol to the requested width.
-            c.translate(code_x, code_y)
-            c.scale(bw_pt / bc.width, 1)
-            bc.drawOn(c, 0, 0)
-            c.restoreState()
+            if code_placeholder:
+                draw_code_placeholder(c, code_x, code_y, bw_pt, bh_pt, code_placeholder)
+            else:
+                # Shorter values keep the same bar width, so align them to the outer edge.
+                draw_code128(c, val, code_x, code_y, bw_pt, bh_pt, barcode_bar_mm, align=code_position)
 
     text_x += text_left_offset * mm
     avail_w = text_right - text_x
@@ -1386,6 +1368,8 @@ def generate_sheet_direct(
     barcode_above_columns=None,
     wrap_tag=None,
     overflow=None,
+    barcode_bar_mm=None,
+    code_placeholder=None,
 ):
     if page_margin_top is None:
         page_margin_top = page_margin
@@ -1481,6 +1465,8 @@ def generate_sheet_direct(
                 barcode_above_columns=barcode_above_columns,
                 wrap_tag=wrap_tag,
                 overflow=overflow,
+                barcode_bar_mm=barcode_bar_mm,
+                code_placeholder=code_placeholder,
             )
 
             x += label_width * mm + gap_horizontal
@@ -1621,6 +1607,8 @@ if st.session_state.df is None:
             st.error(layout_error)
         else:
             st.session_state.df = start_df
+            st.session_state.pop("print_unticked_rows", None)
+            st.session_state.pop("row_search_input", None)
             st.session_state.data_source = data_source
             st.session_state.scroll_to_top = True
             st.rerun()
@@ -1794,12 +1782,35 @@ with filter_container:
         row_limited_df = active_df.iloc[row_range_start - 1:row_range_end].copy()
         filtered_df = apply_filter_rules(row_limited_df, filter_rules, filter_match_mode)
 
-    df_for_selection, row_control_column, print_control_column = build_selection_table(active_df, filtered_df)
-
     with table_col:
-        st.caption(f"{len(filtered_df)} of {len(active_df)} rows shown before manual selection.")
-        st.write(f"Check the **{print_control_column}** box for rows you want to include in the PDF:")
-        edited_df = st.data_editor(
+        search = st.text_input(
+            "Search rows", key="row_search_input", placeholder="Search any column, e.g. B73",
+            help="Show only rows containing this text, to tick or untick them together. Searching changes "
+                 "which rows are shown, not which are printed: ticks on rows hidden by the search are kept.",
+        ).strip()
+        shown_df = apply_filter_rules(
+            filtered_df, [{"column": "All Columns", "operator": "Contains", "query": search}], FILTER_MATCH_ALL)
+        unticked = st.session_state.setdefault("print_unticked_rows", set())
+        df_for_selection, row_control_column, print_control_column = build_selection_table(
+            active_df, shown_df, unticked)
+
+        scope = "matching" if search else "all"
+        shown_rows = list(shown_df.index)
+        select_col, deselect_col, count_col = st.columns([1, 1, 3], vertical_alignment="center")
+        select_col.button(f"Select {scope}", key="select_rows_btn", on_click=set_rows_ticked,
+                          args=(shown_rows, True), disabled=shown_df.empty, width="stretch")
+        deselect_col.button(f"Deselect {scope}", key="deselect_rows_btn", on_click=set_rows_ticked,
+                            args=(shown_rows, False), disabled=shown_df.empty, width="stretch")
+        ticked_count = sum(idx not in unticked for idx in filtered_df.index)
+        count_col.caption(
+            (f"{len(shown_df)} of {len(filtered_df)} rows match “{search}”. " if search else
+             f"{len(filtered_df)} of {len(active_df)} rows pass the row range and filters. ")
+            + f"**{ticked_count}** ticked for printing.")
+
+        # A new key whenever the shown rows or ticks change outside the editor, so
+        # the editor never re-applies earlier edits to different rows.
+        editor_key = f"editor_{st.session_state.get('print_editor_version', 0)}_{hash(tuple(shown_rows))}"
+        st.data_editor(
             df_for_selection,
             column_config={
                 print_control_column: st.column_config.CheckboxColumn(print_control_column, default=True),
@@ -1808,10 +1819,13 @@ with filter_container:
             disabled=[row_control_column] + active_df.columns.tolist(),
             width="stretch",
             hide_index=True,
-            key="editor"
+            key=editor_key,
+            on_change=record_print_edits,
+            args=(editor_key, shown_rows, print_control_column),
         )
 
-    df_to_use = selected_data(edited_df, row_control_column, print_control_column)
+    df_to_use = ticked_rows(filtered_df, st.session_state["print_unticked_rows"])
+    print_row_numbers = [active_df.index.get_loc(index) + 1 for index in df_to_use.index]
 
     if df_to_use.empty:
         st.warning("No rows selected for printing. Please filter or check boxes above.")
@@ -2125,6 +2139,7 @@ with st.sidebar.expander("Code Settings", expanded=False):
             "Code type",
             code_type_options,
             key="code_type_select",
+            on_change=default_barcode_text_position,
             help="QR codes can be scanned by any smartphone camera. Barcodes (Code 128) suit handheld scanners and take less vertical space.",
         )
 
@@ -2148,12 +2163,11 @@ with st.sidebar.expander("Code Settings", expanded=False):
                 step=1, input_min=1, input_max=500,
                 help="Side length of the QR code square. Larger codes are easier to scan from a distance but take more label space.")
             barcode_width = barcode_height = 0
-            module_warning = qr_module_warning(df_to_use[code_column], qr_size)
-            if module_warning:
-                st.warning(module_warning)
+            barcode_bar_mm = None
         else:
             text_position_options = ["Beside barcode", "Above barcode", "Below barcode", "Above and below barcode"]
-            ensure_choice("barcode_text_position_select", text_position_options, "Beside barcode")
+            ensure_choice("barcode_text_position_select", text_position_options,
+                          TEMPLATE_DEFAULTS["barcode_text_position_select"])
             barcode_text_position = st.selectbox(
                 "Text placement", text_position_options, key="barcode_text_position_select",
                 help="Place displayed fields beside, above, below, or on both sides of the barcode.",
@@ -2174,20 +2188,23 @@ with st.sidebar.expander("Code Settings", expanded=False):
                 st.session_state["barcode_above_columns_multiselect"] = barcode_above_columns
                 below_fields = [col for col in visible_columns if col not in barcode_above_columns]
                 st.caption("Fields below barcode: " + (", ".join(below_fields) or "None"))
-            max_barcode_width = max(16, int(label_width - 5))
+            ensure_choice("printer_dpi_select", PRINTER_DPI_OPTIONS, DEFAULT_PRINTER_DPI)
+            printer_dpi = st.selectbox(
+                "Printer resolution", PRINTER_DPI_OPTIONS, key="printer_dpi_select",
+                format_func=lambda dpi: f"{dpi} dpi",
+                help="The printer's dots per inch, on its spec sheet. The barcode is sized to print "
+                     "cleanly at this resolution. Most thermal label printers are 203 dpi (some 300 dpi); "
+                     "office laser printers are usually 600 dpi. Use 203 dpi if unsure.")
+            barcode_bar_mm = reliable_bar_mm(printer_dpi)
+            barcode_width = barcode_width_mm(df_to_use[code_column], barcode_bar_mm)
+            st.caption(f"Barcode width: {barcode_width:.1f} mm, set by the longest code value "
+                       "so every barcode scans reliably.")
             max_barcode_height = max(6, int(label_height - 5))
-            ensure_int_range("barcode_width_slider", TEMPLATE_DEFAULTS["barcode_width_slider"], 1, 500)
             ensure_int_range("barcode_height_slider", TEMPLATE_DEFAULTS["barcode_height_slider"], 1, 500)
-            barcode_width = slider_with_input("Barcode width (mm)", 15, max_barcode_width, "barcode_width_slider",
-                step=1, input_min=1, input_max=500,
-                help="Horizontal length of the barcode. Wider barcodes are more reliably scanned.")
             barcode_height = slider_with_input("Barcode height (mm)", 5, max_barcode_height, "barcode_height_slider",
                 step=1, input_min=1, input_max=500,
                 help="Vertical height of the barcode bars.")
             qr_size = 0
-            bar_warning = barcode_bar_warning(df_to_use[code_column], barcode_width)
-            if bar_warning:
-                st.warning(bar_warning)
 
         max_qr_left_offset = max(1, int(label_width / 2))
         ensure_int_range("qr_left_offset_slider", TEMPLATE_DEFAULTS["qr_left_offset_slider"], 0, max_qr_left_offset)
@@ -2195,11 +2212,26 @@ with st.sidebar.expander("Code Settings", expanded=False):
         if show_advanced:
             qr_left_offset = st.slider("Code offset from edge (mm)", 0, max_qr_left_offset, key="qr_left_offset_slider",
                 help="Nudge the code inward from the label edge — useful if the code is being clipped by the label border or printer margin.")
+        # The tear-off and loop area of a wrap tag take width from the main label.
+        main_label_width = label_width - (
+            st.session_state.get("wrap_leader_mm_input", WRAP_DEFAULTS["wrap_leader_mm_input"])
+            + st.session_state.get("wrap_tear_width_mm_input", WRAP_DEFAULTS["wrap_tear_width_mm_input"])
+            if st.session_state.get("wrap_enabled_check") else 0)
+        code_issues, code_cautions = code_problems(
+            df_to_use[code_column], print_row_numbers, code_type,
+            width_mm=main_label_width - 2 * qr_left_offset, height_mm=label_height,
+            qr_size=qr_size, bar_mm=barcode_bar_mm, column=code_column)
+        for issue in code_issues:
+            st.error(issue)
+        for caution in code_cautions:
+            st.warning(caution)
     else:
         code_type = "None"
         code_column = None
         code_position = "Left"
         qr_size = barcode_width = barcode_height = 0
+        barcode_bar_mm = None
+        code_issues = code_cautions = []
         qr_left_offset = st.session_state.get(
             "qr_left_offset_slider",
             TEMPLATE_DEFAULTS["qr_left_offset_slider"],
@@ -2395,7 +2427,6 @@ if show_advanced or st.session_state.get("wrap_enabled_check"):
                 ensure_choice("wrap_code_position_select", ["Left", "Right"], "Left")
                 st.selectbox("Tear-off code position", ["Left", "Right"], key="wrap_code_position_select")
                 sizes = [("wrap_qr_size_mm_input", "Tear-off QR size (mm)")] if tear_code_type == "QR" else [
-                    ("wrap_barcode_width_mm_input", "Tear-off barcode width (mm)"),
                     ("wrap_barcode_height_mm_input", "Tear-off barcode height (mm)"),
                 ]
                 for key, label in sizes:
@@ -2403,16 +2434,15 @@ if show_advanced or st.session_state.get("wrap_enabled_check"):
                     st.number_input(label, min_value=1.0, max_value=500.0, step=0.5, key=key)
                 tear_code_column = (st.session_state.get("code_column_select", default_code_column)
                                     if use_main_code else st.session_state["wrap_code_column_select"])
-                if tear_code_column in df_to_use.columns:
-                    code_warning = (
-                        qr_module_warning(df_to_use[tear_code_column], st.session_state["wrap_qr_size_mm_input"],
-                                          name="tear-off QR code")
-                        if tear_code_type == "QR" else
-                        barcode_bar_warning(df_to_use[tear_code_column], st.session_state["wrap_barcode_width_mm_input"],
-                                            name="tear-off barcode")
-                    )
-                    if code_warning:
-                        st.warning(code_warning)
+                if tear_code_type == "Barcode":
+                    ensure_choice("printer_dpi_select", PRINTER_DPI_OPTIONS, DEFAULT_PRINTER_DPI)
+                    if code_type != "Barcode":  # Otherwise set beside the main barcode's settings.
+                        st.selectbox("Printer resolution", PRINTER_DPI_OPTIONS, key="printer_dpi_select",
+                                     format_func=lambda dpi: f"{dpi} dpi")
+                    if tear_code_column in df_to_use.columns:
+                        tear_width = barcode_width_mm(df_to_use[tear_code_column],
+                                                      reliable_bar_mm(st.session_state["printer_dpi_select"]))
+                        st.caption(f"Tear-off barcode width: {tear_width:.1f} mm, set by the longest code value.")
             ensure_bool("wrap_custom_fields_check", False)
             custom_tear_fields = st.checkbox("Customize tear-off fields", key="wrap_custom_fields_check",
                                              help="By default the tear-off follows the main tag's displayed fields and their order.")
@@ -2440,10 +2470,27 @@ st.sidebar.toggle(
 tear_main_code_column = st.session_state.get("code_column_select", default_code_column)
 if tear_main_code_column not in _all_active_columns:
     tear_main_code_column = default_code_column
-wrap_tag = wrap_config(st.session_state, visible_columns, tear_main_code_column)
+tear_code_column = (tear_main_code_column if st.session_state.get("wrap_use_main_code_check", True)
+                    else st.session_state.get("wrap_code_column_select"))
+wrap_tag = wrap_config(st.session_state, visible_columns, tear_main_code_column,
+                       df_to_use[tear_code_column] if tear_code_column in df_to_use.columns else ())
 wrap_error = wrap_layout_error(wrap_tag, label_width, label_height)
 if wrap_error:
     st.sidebar.error(wrap_error)
+tear_issues = tear_cautions = []
+if wrap_tag["enabled"] and not wrap_error and wrap_tag["code_type"] != "None" \
+        and wrap_tag["code_column"] in df_to_use.columns:
+    tear_issues, tear_cautions = code_problems(
+        df_to_use[wrap_tag["code_column"]], print_row_numbers, wrap_tag["code_type"],
+        width_mm=wrap_tag["width"] - 2 * wrap_tag["padding"], height_mm=label_height - 2 * wrap_tag["padding"],
+        qr_size=wrap_tag["qr_size"], bar_mm=wrap_tag["bar_mm"], column=wrap_tag["code_column"],
+        name="tear-off QR code" if wrap_tag["code_type"] == "QR" else "tear-off barcode")
+    for issue in tear_issues:
+        st.sidebar.error(issue)
+    for caution in tear_cautions:
+        st.sidebar.warning(caution)
+    if tear_issues:
+        wrap_tag["placeholder"] = "Cannot print: see message above"
 
 with st.sidebar:
     st.divider()
@@ -2476,7 +2523,7 @@ if rename_columns_enabled:
 else:
     column_label_map = {column: column for column in active_df.columns.tolist()}
 
-barcode_layout_fits = True
+stack_problem = None
 if code_type == "Barcode" and barcode_text_position != "Beside barcode":
     above_count = (len(visible_columns) if barcode_text_position == "Above barcode" else
                    len(barcode_above_columns) if barcode_text_position == "Above and below barcode" else 0)
@@ -2484,13 +2531,22 @@ if code_type == "Barcode" and barcode_text_position != "Beside barcode":
     required_height = (barcode_height * mm
                        + len(visible_columns) * max(label_font_size + 4, label_font_size * 1.5 * row_height_factor)
                        + (bool(above_count) + bool(below_count)) * 2 * mm)
-    barcode_layout_fits = required_height <= (label_height - 2 * label_padding) * mm
+    available_height = (label_height - 2 * label_padding) * mm
+    if required_height > available_height:
+        field_count = len(visible_columns)
+        stack_problem = (
+            f"The barcode and {field_count} field{'s' if field_count != 1 else ''} stacked with it need "
+            f"{required_height / mm:.1f} mm of height, but the label has {available_height / mm:.1f} mm inside "
+            "its padding, so the barcode would be cut off. Show fewer fields, place text beside the barcode, "
+            "reduce the barcode height, font size or row spacing, or use a taller label.")
+print_problems = code_issues + tear_issues + ([stack_problem] if stack_problem else [])
 
 design = dict(
     visible_columns=visible_columns, code_column=code_column, code_type=code_type,
     highlight_column=highlight_column, label_font=label_font, label_font_size=label_font_size,
     label_width=label_width, label_height=label_height, qr_size=qr_size,
-    barcode_width=barcode_width, barcode_height=barcode_height,
+    barcode_width=barcode_width, barcode_height=barcode_height, barcode_bar_mm=barcode_bar_mm,
+    code_placeholder="Cannot print: see message above" if code_issues or stack_problem else None,
     row_height_factor=row_height_factor, sidebar_factor=sidebar_factor,
     highlight_padding=highlight_padding, padding=label_padding, show_border=show_border,
     show_column_names=show_column_names, side_highlight=side_highlight,
@@ -2526,12 +2582,12 @@ with summary_container:
             st.rerun()
 
     if not filtered_df.empty and not wrap_error:
-        if not barcode_layout_fits:
-            st.warning(
-                "The barcode and text exceed the space inside the label padding. "
-                "The preview remains visible, but content may extend beyond the label edges. "
-                "Increase label height or reduce barcode height, font size, row spacing, or padding before exporting."
-            )
+        if print_problems:
+            st.error("**These labels cannot be printed yet.** The settings must work for every selected row, "
+                     "so the code is shown as an outline until this is fixed:\n\n"
+                     + "\n".join(f"- {problem}" for problem in print_problems))
+        for caution in code_cautions + tear_cautions:
+            st.warning(caution)
         buffer = io.BytesIO()
         c_prev = canvas.Canvas(buffer, pagesize=(label_width * mm, label_height * mm))
         preview_overflow = set()
@@ -2748,8 +2804,10 @@ with export_container:
         export_error = "No rows are selected for printing."
     elif wrap_error:
         export_error = wrap_error
-    elif not barcode_layout_fits:
-        export_error = "Adjust the barcode and text layout to fit the label."
+    elif print_problems:
+        count = len(print_problems)
+        export_error = (f"Fix the {'problem' if count == 1 else f'{count} problems'} with the "
+                        "QR code or barcode shown above the preview.")
     elif is_sheet and labels_per_sheet == 0:
         export_error = "The current sheet settings do not fit any labels on the page."
     else:
