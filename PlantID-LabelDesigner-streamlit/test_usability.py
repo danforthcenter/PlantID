@@ -182,13 +182,52 @@ class FineTuningTests(unittest.TestCase):
         self.assertIn("Wrap tag / tear-off", [expander.label for expander in app.expander])
 
 
+class RowSearchTests(unittest.TestCase):
+    def test_search_selects_and_deselects_across_the_dataset(self):
+        df = read_label_csv((ROOT / "PV1_metadata.csv").read_bytes())[0]
+        matches = int(df.apply(lambda row: row.str.contains("Spring32", case=False).any(), axis=1).sum())
+        self.assertTrue(0 < matches < len(df))
+        app = open_designer("Label printer example")
+
+        def labels_caption():
+            return next(c.value for c in app.caption if "records ×" in c.value)
+
+        app.text_input(key="row_search_input").set_value("spring32").run()
+        self.assertTrue(any(f"{matches} of {len(df)} rows match “spring32”" in c.value for c in app.caption))
+        app.button(key="deselect_rows_btn").click().run()
+        self.assertTrue(labels_caption().startswith(f"{len(df) - matches} records"))
+        # Clearing the search shows every row again, with the matching rows still unticked.
+        app.text_input(key="row_search_input").set_value("").run()
+        self.assertTrue(labels_caption().startswith(f"{len(df) - matches} records"))
+        app.button(key="deselect_rows_btn").click().run()
+        self.assertTrue(any("No rows selected for printing" in w.value for w in app.warning))
+        app.button(key="select_rows_btn").click().run()
+        self.assertTrue(labels_caption().startswith(f"{len(df)} records"))
+
+
 class ScanabilityTests(unittest.TestCase):
-    def test_small_qr_codes_warn(self):
+    def test_small_qr_codes_block_export_or_warn(self):
         app = open_designer("Label printer example")
         app.number_input(key="qr_size_slider__input").set_value(8).run()
-        self.assertTrue(any("squares are" in warning.value for warning in app.warning))
+        self.assertTrue(any("too small to scan on every label" in error.value for error in app.error))
+        self.assertTrue(any(error.value.startswith("Cannot export") for error in app.error))
+        self.assertNotIn("Download labels PDF", downloads(app))
+        app.number_input(key="qr_size_slider__input").set_value(12).run()
+        self.assertFalse(app.error)
+        self.assertTrue(any("may struggle" in warning.value for warning in app.warning))
         app.number_input(key="qr_size_slider__input").set_value(18).run()
         self.assertFalse(any("squares are" in warning.value for warning in app.warning))
+
+    def test_switching_to_barcode_puts_fields_above_and_below(self):
+        app = open_designer("Label printer example")
+        app.selectbox(key="code_type_select").set_value("Barcode").run()
+        self.assertEqual(app.selectbox(key="barcode_text_position_select").value, "Above and below barcode")
+        # Six fields stacked with the barcode are taller than the 35 mm example label.
+        app.selectbox(key="code_column_select").set_value("Plant").run()
+        problems = [error.value for error in app.error if "cannot be printed yet" in error.value]
+        self.assertEqual(len(problems), 1)
+        self.assertIn("The barcode and 6 fields stacked with it need", problems[0])
+        self.assertNotIn("Download labels PDF", downloads(app))
 
 
 if __name__ == "__main__":

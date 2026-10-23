@@ -70,7 +70,7 @@ class WrapTagTests(unittest.TestCase):
 
     def test_barcode_customization_toggle_and_saved_layout(self):
         self.app.selectbox(key='wrap_code_type_select').set_value('Barcode').run()
-        self.app.number_input(key='wrap_barcode_width_mm_input').set_value(28.0).run()
+        self.app.number_input(key='wrap_barcode_height_mm_input').set_value(9.0).run()
         self.app.checkbox(key='wrap_custom_fields_check').check().run()
         self.app.multiselect(key='wrap_text_columns_multiselect').set_value(['Plot', 'Genotype']).run()
         self.app.checkbox(key='add_code_check').uncheck().run()
@@ -82,7 +82,7 @@ class WrapTagTests(unittest.TestCase):
         self.assertFalse(any(box.key == 'wrap_enabled_check' for box in self.app.checkbox))
         self.app.toggle(key='show_advanced_toggle').set_value(True).run()
         self.app.checkbox(key='wrap_enabled_check').check().run()
-        self.assertEqual(self.app.session_state['wrap_barcode_width_mm_input'], 28)
+        self.assertEqual(self.app.session_state['wrap_barcode_height_mm_input'], 9)
         self.assertEqual(self.app.session_state['wrap_text_columns_multiselect'], ['Plot', 'Genotype'])
         # Load through the production importer before the UI is rendered.
         source = (ROOT / 'streamlit_app.py').read_text().replace(
@@ -93,7 +93,7 @@ class WrapTagTests(unittest.TestCase):
         restored.session_state['_pending_test_layout'] = saved
         restored.run()
         self.assertFalse(restored.exception)
-        self.assertEqual(restored.session_state['wrap_barcode_width_mm_input'], 28)
+        self.assertEqual(restored.session_state['wrap_barcode_height_mm_input'], 9)
         self.assertEqual(restored.session_state['wrap_text_columns_multiselect'], ['Plot', 'Genotype'])
         self.assertEqual(restored.session_state['sheet_preset_select'], GEMPLERS_SHEET_NAME)
 

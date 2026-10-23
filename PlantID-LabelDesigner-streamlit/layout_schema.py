@@ -60,7 +60,6 @@ FIELDS = [
     ("code.position", "code_position_select", LEFT_RIGHT),
     ("code.edge_offset_mm", "qr_left_offset_slider", None),
     ("code.qr_size_mm", "qr_size_slider", None),
-    ("code.barcode_width_mm", "barcode_width_slider", None),
     ("code.barcode_height_mm", "barcode_height_slider", None),
     ("code.barcode_text_position", "barcode_text_position_select", BARCODE_TEXT),
     ("code.fields_above_barcode", "barcode_above_columns_multiselect", None),
@@ -83,7 +82,6 @@ FIELDS = [
     ("wrap_tag.code_column", "wrap_code_column_select", None),
     ("wrap_tag.code_position", "wrap_code_position_select", LEFT_RIGHT),
     ("wrap_tag.qr_size_mm", "wrap_qr_size_mm_input", None),
-    ("wrap_tag.barcode_width_mm", "wrap_barcode_width_mm_input", None),
     ("wrap_tag.barcode_height_mm", "wrap_barcode_height_mm_input", None),
     ("wrap_tag.custom_fields", "wrap_custom_fields_check", None),
     ("wrap_tag.fields", "wrap_text_columns_multiselect", None),
@@ -150,7 +148,7 @@ def settings_to_layout(settings):
     _set_path(layout, "label.preset", preset)
 
     is_sheet = settings.get("printer_type_select") == PRINTER_TYPE_SHEET
-    printer = {"type": "sheet" if is_sheet else "label"}
+    printer = {"type": "sheet" if is_sheet else "label", "resolution_dpi": settings.get("printer_dpi_select")}
     if is_sheet:
         stock = settings.get("sheet_preset_select")
         use_stock = (settings.get("sheet_setup_select") == SHEET_SETUP_PRESET
@@ -201,6 +199,8 @@ def layout_to_settings(layout):
 
     printer = layout.get("printer")
     if isinstance(printer, dict):
+        if "resolution_dpi" in printer:
+            settings["printer_dpi_select"] = printer["resolution_dpi"]
         if printer.get("type") == "sheet":
             settings["printer_type_select"] = PRINTER_TYPE_SHEET
             stock = printer.get("sheet_stock")

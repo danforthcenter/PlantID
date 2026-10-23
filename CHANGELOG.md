@@ -6,6 +6,16 @@ All notable changes to PlantID Label Designer are listed here. The app follows [
 
 ### Added
 - **Rename displayed columns** can now leave a column's name blank, so only its value is printed: tick **Hide** beside the column, or type a space as its label.
+- **Printer resolution** (203, 300 or 600 dpi) for barcodes. Saved layouts store it.
+- **Search rows** above the row table shows only rows containing a term in any column, such as `B73`, with **Select matching** and **Deselect matching** buttons to tick or untick them together. Without a search the buttons are **Select all** and **Deselect all**. Searching only changes which rows are shown: ticks are kept for rows the search hides, and the table shows how many rows are ticked for printing.
+
+### Changed
+- Print ticks are kept when the row range or filters change, instead of every row being ticked again.
+- Choosing a barcode starts with **Text placement** set to **Above and below barcode**.
+- QR codes and barcodes are checked against every row being printed, not just the preview. Anything that would make some codes unprintable blocks export, with a message naming how many labels are affected and the worst value and its row: blank code values, characters a barcode cannot hold, codes too long or too large to fit, fields stacked with a barcode that are taller than the label (with the heights needed and available), and QR squares under 0.25 mm. QR squares under 0.35 mm still warn without blocking. While a problem remains, the preview shows a red outline in place of the code.
+
+### Fixed
+- Barcodes now scan when printed. They were stretched to a chosen width in millimetres, so bars landed between printer dots and printed unevenly. Barcodes are now sized automatically: bars are the fewest whole printer dots that scan reliably (0.25 mm), aligned to the printer's dot grid, with blank margins of 10 bar widths. The barcode's width follows from the longest code value, and export is blocked with a suggested fix when it does not fit on the label. The barcode width settings are removed; layouts that saved one ignore it.
 
 ## 1.0.0
 
